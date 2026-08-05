@@ -1,0 +1,43 @@
+import http from 'node:http';
+import { createApp } from './app.js';
+import { env } from './config/env.js';
+import { getPool, closePool } from './config/database.js';
+import { connectRedis, disconnectRedis } from './config/redis.js';
+import { setupSockets } from './sockets/index.js';
+
+async function main(): Promise<void> {
+  const app = createApp();
+  const server = http.createServer(app);
+  setupSockets(server);
+
+  try {
+    await getPool();
+    console.info(`[db] SQL Server conectado → ${env.SQLSERVER_SERVER} / ${env.SQLSERVER_DATABASE}`);
+  } catch (err) {
+    console.error('[db] No se pudo conectar a SQL Server:', err);
+    console.error(
+      'Tip: verificá que exista la DB salta_delivery y que Windows Auth o USER/PASSWORD funcionen.',
+    );
+    process.exit(1);
+  }
+
+  await connectRedis();
+
+  server.listen(env.PORT, () => {
+    console.info(`[api] Salta Delivery escuchando en http://localhost:${env.PORT}`);
+    console.info(`[api] health → http://localhost:${env.PORT}/api/health`);
+  });
+
+  const shutdown = async () => {
+    console.info('Cerrando…');
+    server.close();
+    await disconnectRedis();
+    await closePool();
+    process.exit(0);
+  };
+
+  process.on('SIGINT', () => void shutdown());
+  process.on('SIGTERM', () => void shutdown());
+}
+
+void main();
