@@ -4,26 +4,12 @@ import { config as loadDotenv } from 'dotenv';
 loadDotenv();
 
 const envSchema = z.object({
-  SQLSERVER_SERVER: z.string().min(1),
-  SQLSERVER_PORT: z.coerce.number().int().positive().default(1433),
-  SQLSERVER_DATABASE: z.string().min(1),
-  SQLSERVER_USER: z.string().optional().default(''),
-  SQLSERVER_PASSWORD: z.string().optional().default(''),
-  SQLSERVER_TRUST_CERTIFICATE: z
-    .string()
-    .optional()
-    .default('true')
-    .transform((v) => v === 'true'),
-  SQLSERVER_ENCRYPT: z
-    .string()
-    .optional()
-    .default('true')
-    .transform((v) => v === 'true'),
-  SQLSERVER_TRUSTED_CONNECTION: z
-    .string()
-    .optional()
-    .default('false')
-    .transform((v) => v === 'true'),
+  DATABASE_URL: z.string().optional().default(''),
+  PGHOST: z.string().default('127.0.0.1'),
+  PGPORT: z.coerce.number().int().positive().default(5432),
+  PGDATABASE: z.string().default('salta_delivery'),
+  PGUSER: z.string().default('postgres'),
+  PGPASSWORD: z.string().optional().default(''),
   REDIS_URL: z.string().default('redis://127.0.0.1:6379'),
   REDIS_ENABLED: z
     .string()
@@ -46,4 +32,9 @@ if (!parsed.success) {
   throw new Error('Configuración de entorno inválida');
 }
 
-export const env = parsed.data;
+const data = parsed.data;
+if (!data.DATABASE_URL && !data.PGPASSWORD && data.NODE_ENV !== 'test') {
+  console.warn('[env] Sin DATABASE_URL ni PGPASSWORD — la conexión a Postgres puede fallar');
+}
+
+export const env = data;

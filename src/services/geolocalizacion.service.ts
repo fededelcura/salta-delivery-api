@@ -1,6 +1,5 @@
 /**
- * geolocalizacion.service.ts
- * Distancia Haversine + ETA. Compatible con GEOGRAPHY SQL Server (SRID 4326).
+ * Distancia Haversine + ETA. Coordenadas lat/lng (sin PostGIS).
  */
 
 import type { Coordenada } from '../types/domain.js';
@@ -36,14 +35,14 @@ export class GeolocalizacionService {
     return Math.max(1, Math.ceil((distanciaKm / velocidadKmh) * 60));
   }
 
-  /** WKT Point para SQL Server: POINT(lng lat) — Ojo: WKT es lng lat */
-  toWktPoint(c: Coordenada): string {
-    return `POINT(${c.lng} ${c.lat})`;
-  }
-
-  /** Expresión T-SQL geography::Point(lat, lng, 4326) */
-  toSqlPointExpression(c: Coordenada): string {
-    return `geography::Point(${c.lat}, ${c.lng}, 4326)`;
+  /** Expresión SQL Haversine en metros entre (lat_col,lng_col) y (@lat,@lng) */
+  haversineMetersSql(latCol: string, lngCol: string): string {
+    return `(
+      6371000 * acos(LEAST(1.0, GREATEST(-1.0,
+        cos(radians(${latCol})) * cos(radians(@lat)) * cos(radians(@lng) - radians(${lngCol}))
+        + sin(radians(${latCol})) * sin(radians(@lat))
+      )))
+    )`;
   }
 }
 

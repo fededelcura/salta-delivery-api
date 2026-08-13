@@ -1,6 +1,7 @@
-import { getPool, sql } from '../config/database.js';
+import { getPool, sql, SqlTransaction } from '../config/database.js';
 import type { PlanCadete, TipoServicio } from '../types/domain.js';
 import { NotFoundError, ValidationError } from '../utils/errors.js';
+import { parseJsonField } from '../utils/json-field.js';
 
 export type ConfigComision = {
   id: string;
@@ -44,7 +45,7 @@ export class ComisionModel {
       comision_pct: number;
     }>(`
       SELECT id, plan_cadete, tipo_servicio, comision_pct
-      FROM dbo.config_comisiones
+      FROM config_comisiones
       ORDER BY plan_cadete, tipo_servicio
     `);
     const rows = result.recordset.map(mapRow);
@@ -84,14 +85,10 @@ export class ComisionModel {
           .input('tipo', sql.NVarChar(20), item.tipo_servicio)
           .input('pct', sql.Decimal(5, 2), item.comision_pct)
           .query(`
-            MERGE dbo.config_comisiones AS t
-            USING (SELECT @plan AS plan_cadete, @tipo AS tipo_servicio) AS s
-            ON t.plan_cadete = s.plan_cadete AND t.tipo_servicio = s.tipo_servicio
-            WHEN MATCHED THEN
-              UPDATE SET comision_pct = @pct, fecha_actualizacion = SYSDATETIMEOFFSET()
-            WHEN NOT MATCHED THEN
-              INSERT (plan_cadete, tipo_servicio, comision_pct)
-              VALUES (@plan, @tipo, @pct);
+            INSERT INTO config_comisiones (plan_cadete, tipo_servicio, comision_pct)
+            VALUES (@plan, @tipo, @pct)
+            ON CONFLICT ON CONSTRAINT uq_config_comisiones
+            DO UPDATE SET comision_pct = EXCLUDED.comision_pct
           `);
       }
       await tx.commit();
@@ -147,12 +144,7 @@ type ComprobanteRow = {
 };
 
 function mapComprobante(row: ComprobanteRow): Comprobante {
-  let detalle: Record<string, unknown> = {};
-  try {
-    detalle = JSON.parse(row.detalle_json) as Record<string, unknown>;
-  } catch {
-    detalle = {};
-  }
+  const detalle = parseJsonField<Record<string, unknown>>(row.detalle_json, {});
   return {
     id: String(row.id),
     numero: row.numero,
@@ -213,7 +205,7 @@ export class ComprobanteModel {
       WHERE (@rol IS NULL OR c.rol_destino = @rol)
         AND (@tipo IS NULL OR c.tipo_servicio = @tipo)
         AND (@desde IS NULL OR c.fecha_emision >= @desde)
-        AND (@hasta IS NULL OR c.fecha_emision < DATEADD(day, 1, @hasta))
+        AND (@hasta IS NULL OR c.fecha_emision < (@hasta::timestamptz + INTERVAL '1 day'))
         AND (
           @q IS NULL
           OR c.numero LIKE @q
@@ -233,14 +225,14 @@ export class ComprobanteModel {
              u.nombre AS usuario_nombre,
              cli.nombre AS cliente_nombre,
              cad.nombre AS cadete_nombre
-      FROM dbo.comprobantes c
-      INNER JOIN dbo.viajes v ON v.id = c.viaje_id
-      INNER JOIN dbo.usuarios u ON u.id = c.usuario_id
-      INNER JOIN dbo.usuarios cli ON cli.id = v.cliente_id
-      LEFT JOIN dbo.usuarios cad ON cad.id = v.cadete_id
+      FROM comprobantes c
+      INNER JOIN viajes v ON v.id = c.viaje_id
+      INNER JOIN usuarios u ON u.id = c.usuario_id
+      INNER JOIN usuarios cli ON cli.id = v.cliente_id
+      LEFT JOIN usuarios cad ON cad.id = v.cadete_id
       ${where}
       ORDER BY c.fecha_emision DESC
-      OFFSET @offset ROWS FETCH NEXT @limit ROWS ONLY
+      OFFSET @offset LIMIT @limit
     `);
 
     const statsReq = pool
@@ -253,11 +245,11 @@ export class ComprobanteModel {
 
     // Totales financieros sobre comprobantes de cliente (1 por viaje) para no duplicar
     const statsWhere = `
-      WHERE c.rol_destino = N'cliente'
-        AND (@rol IS NULL OR @rol = N'cliente')
+      WHERE c.rol_destino = 'cliente'
+        AND (@rol IS NULL OR @rol = 'cliente')
         AND (@tipo IS NULL OR c.tipo_servicio = @tipo)
         AND (@desde IS NULL OR c.fecha_emision >= @desde)
-        AND (@hasta IS NULL OR c.fecha_emision < DATEADD(day, 1, @hasta))
+        AND (@hasta IS NULL OR c.fecha_emision < (@hasta::timestamptz + INTERVAL '1 day'))
         AND (
           @q IS NULL
           OR c.numero LIKE @q
@@ -274,13 +266,13 @@ export class ComprobanteModel {
       pago_cadetes: number;
     }>(`
       SELECT COUNT(*) AS cantidad,
-             ISNULL(SUM(c.tarifa_total), 0) AS tarifa_total,
-             ISNULL(SUM(c.comision_monto), 0) AS comision_total,
-             ISNULL(SUM(c.pago_cadete), 0) AS pago_cadetes
-      FROM dbo.comprobantes c
-      INNER JOIN dbo.viajes v ON v.id = c.viaje_id
-      INNER JOIN dbo.usuarios cli ON cli.id = v.cliente_id
-      LEFT JOIN dbo.usuarios cad ON cad.id = v.cadete_id
+             COALESCE(SUM(c.tarifa_total), 0) AS tarifa_total,
+             COALESCE(SUM(c.comision_monto), 0) AS comision_total,
+             COALESCE(SUM(c.pago_cadete), 0) AS pago_cadetes
+      FROM comprobantes c
+      INNER JOIN viajes v ON v.id = c.viaje_id
+      INNER JOIN usuarios cli ON cli.id = v.cliente_id
+      LEFT JOIN usuarios cad ON cad.id = v.cadete_id
       ${statsWhere}
     `);
 
@@ -305,10 +297,11 @@ export class ComprobanteModel {
       .request()
       .input('uid', sql.UniqueIdentifier, usuarioId)
       .query<ComprobanteRow>(`
-        SELECT TOP 50 *
-        FROM dbo.comprobantes
+        SELECT *
+        FROM comprobantes
         WHERE usuario_id = @uid
         ORDER BY fecha_emision DESC
+        LIMIT 50
       `);
     return result.recordset.map(mapComprobante);
   }
@@ -319,7 +312,7 @@ export class ComprobanteModel {
       .request()
       .input('vid', sql.UniqueIdentifier, viajeId)
       .query<ComprobanteRow>(`
-        SELECT * FROM dbo.comprobantes WHERE viaje_id = @vid ORDER BY rol_destino
+        SELECT * FROM comprobantes WHERE viaje_id = @vid ORDER BY rol_destino
       `);
     return result.recordset.map(mapComprobante);
   }
@@ -333,7 +326,7 @@ export class ComprobanteModel {
       where += ' AND usuario_id = @uid';
     }
     const result = await req.query<ComprobanteRow>(`
-      SELECT * FROM dbo.comprobantes WHERE ${where}
+      SELECT * FROM comprobantes WHERE ${where}
     `);
     const row = result.recordset[0];
     if (!row) throw new NotFoundError('Comprobante no encontrado');
@@ -346,25 +339,25 @@ export class ComprobanteModel {
       .request()
       .input('vid', sql.UniqueIdentifier, viajeId)
       .query<{ n: number }>(`
-        SELECT COUNT(*) AS n FROM dbo.comprobantes WHERE viaje_id = @vid
+        SELECT COUNT(*) AS n FROM comprobantes WHERE viaje_id = @vid
       `);
     return Number(result.recordset[0]?.n ?? 0) >= 2;
   }
 
-  async nextNumero(tx: sql.Transaction): Promise<string> {
+  async nextNumero(tx: SqlTransaction): Promise<string> {
     const req = new sql.Request(tx);
     const result = await req.query<{ ultimo: number }>(`
-      UPDATE dbo.comprobante_seq
+      UPDATE comprobante_seq
       SET ultimo = ultimo + 1
-      OUTPUT INSERTED.ultimo
-      WHERE id = 1;
+      WHERE id = 1
+      RETURNING ultimo
     `);
     const n = Number(result.recordset[0]?.ultimo ?? 1);
     return `SD-${String(n).padStart(6, '0')}`;
   }
 
   async insert(
-    tx: sql.Transaction,
+    tx: SqlTransaction,
     input: {
       numero: string;
       viaje_id: string;
@@ -395,14 +388,14 @@ export class ComprobanteModel {
       .input('tipo', sql.NVarChar(20), input.tipo_servicio)
       .input('detalle', sql.NVarChar(sql.MAX), JSON.stringify(input.detalle))
       .query(`
-        INSERT INTO dbo.comprobantes (
+        INSERT INTO comprobantes (
           numero, viaje_id, usuario_id, rol_destino,
           tarifa_total, comision_pct, comision_monto, pago_cadete, monto_usuario,
           metodo_pago, tipo_servicio, detalle_json
         ) VALUES (
           @numero, @viaje, @uid, @rol,
           @tarifa, @pct, @comision, @pago, @monto,
-          @metodo, @tipo, @detalle
+          @metodo, @tipo, @detalle::jsonb
         )
       `);
   }

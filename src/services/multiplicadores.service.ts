@@ -5,7 +5,9 @@
 
 import { getPool, sql } from '../config/database.js';
 import type { Coordenada } from '../types/domain.js';
+import { parseJsonField } from '../utils/json-field.js';
 import type { MultiplicadoresInput } from './tarifas.service.js';
+import { geolocalizacionService } from './geolocalizacion.service.js';
 
 type HoraConfig = {
   valle: number;
@@ -91,9 +93,9 @@ async function readConfig<T>(clave: string, fallback: T): Promise<T> {
     const r = await pool
       .request()
       .input('clave', sql.NVarChar(100), clave)
-      .query<{ valor: string }>(`SELECT valor FROM dbo.configuraciones WHERE clave = @clave`);
-    if (!r.recordset[0]?.valor) return fallback;
-    return { ...fallback, ...(JSON.parse(r.recordset[0].valor) as T) };
+      .query<{ valor: unknown }>(`SELECT valor FROM configuraciones WHERE clave = @clave`);
+    if (r.recordset[0]?.valor == null) return fallback;
+    return { ...fallback, ...parseJsonField<T>(r.recordset[0].valor, fallback) };
   } catch {
     return fallback;
   }
@@ -151,6 +153,10 @@ export class MultiplicadoresService {
     let cadetes_online_cerca = 0;
 
     try {
+      const haversineZona = geolocalizacionService.haversineMetersSql('lat_centro', 'lng_centro');
+      const haversineViaje = geolocalizacionService.haversineMetersSql('v.origen_lat', 'v.origen_lng');
+      const haversineCadete = geolocalizacionService.haversineMetersSql('c.ubicacion_lat', 'c.ubicacion_lng');
+
       const pool = await getPool();
       const zona = await pool
         .request()
@@ -163,12 +169,12 @@ export class MultiplicadoresService {
           demanda_actual: number;
           dist_m: number;
         }>(`
-          SELECT TOP 1
-                 h3_index, nombre, tarifa_multiplier, demanda_actual,
-                 centro.STDistance(geography::Point(@lat, @lng, 4326)) AS dist_m
-          FROM dbo.zonas_hexagonos
-          WHERE activa = 1
-          ORDER BY centro.STDistance(geography::Point(@lat, @lng, 4326))
+          SELECT h3_index, nombre, tarifa_multiplier, demanda_actual,
+                 ${haversineZona} AS dist_m
+          FROM zonas_hexagonos
+          WHERE activa = TRUE
+          ORDER BY ${haversineZona}
+          LIMIT 1
         `);
       const z = zona.recordset[0];
       if (z && Number(z.dist_m) <= 8000) {
@@ -190,17 +196,18 @@ export class MultiplicadoresService {
         .query<{ viajes: number; cadetes: number }>(`
           SELECT
             (SELECT COUNT(*)
-             FROM dbo.viajes v
-             WHERE v.estado IN (N'buscando_cadete', N'asignado', N'cadete_en_camino', N'cadete_llego', N'en_curso')
-               AND v.origen_ubicacion.STDistance(geography::Point(@lat, @lng, 4326)) <= 5000
-               AND v.fecha_solicitud >= DATEADD(hour, -2, SYSDATETIMEOFFSET())
+             FROM viajes v
+             WHERE v.estado IN ('buscando_cadete', 'asignado', 'cadete_en_camino', 'cadete_llego', 'en_curso')
+               AND ${haversineViaje} <= 5000
+               AND v.fecha_solicitud >= (NOW() - INTERVAL '2 hours')
             ) AS viajes,
             (SELECT COUNT(*)
-             FROM dbo.cadetes c
-             WHERE c.disponibilidad = N'online'
-               AND c.estado_verificacion = N'aprobado'
-               AND c.ubicacion_actual IS NOT NULL
-               AND c.ubicacion_actual.STDistance(geography::Point(@lat, @lng, 4326)) <= 8000
+             FROM cadetes c
+             WHERE c.disponibilidad = 'online'
+               AND c.estado_verificacion = 'aprobado'
+               AND c.ubicacion_lat IS NOT NULL
+               AND c.ubicacion_lng IS NOT NULL
+               AND ${haversineCadete} <= 8000
             ) AS cadetes
         `);
       demanda_viajes_activos = Number(dem.recordset[0]?.viajes ?? 0);

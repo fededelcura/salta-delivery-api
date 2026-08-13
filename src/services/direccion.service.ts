@@ -2,7 +2,7 @@
  * Dirección estructurada + armado de texto + zona por barrio.
  */
 
-import { getPool, sql } from '../config/database.js';
+import { getPool } from '../config/database.js';
 
 export type DireccionEstructurada = {
   calle: string;
@@ -72,8 +72,8 @@ export async function resolverZonaPorBarrio(barrio: string): Promise<ZonaResuelt
       lng_centro: number;
     }>(`
       SELECT h3_index, nombre, lat_centro, lng_centro
-      FROM dbo.zonas_hexagonos
-      WHERE activa = 1
+      FROM zonas_hexagonos
+      WHERE activa = TRUE
     `);
 
     const aliasTarget = BARRIO_ALIASES[b];

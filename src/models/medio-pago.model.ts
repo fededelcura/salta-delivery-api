@@ -71,8 +71,8 @@ export class MedioPagoModel {
       .input('uid', sql.UniqueIdentifier, usuarioId)
       .query<MedioRow>(`
         SELECT *
-        FROM dbo.medios_pago_cliente
-        WHERE usuario_id = @uid AND activo = 1
+        FROM medios_pago_cliente
+        WHERE usuario_id = @uid AND activo = TRUE
         ORDER BY es_predeterminado DESC, fecha_creacion DESC
       `);
     return result.recordset.map(mapMedio);
@@ -85,8 +85,8 @@ export class MedioPagoModel {
       .input('uid', sql.UniqueIdentifier, usuarioId)
       .input('id', sql.UniqueIdentifier, id)
       .query<MedioRow>(`
-        SELECT * FROM dbo.medios_pago_cliente
-        WHERE id = @id AND usuario_id = @uid AND activo = 1
+        SELECT * FROM medios_pago_cliente
+        WHERE id = @id AND usuario_id = @uid AND activo = TRUE
       `);
     const row = result.recordset[0];
     if (!row) throw new NotFoundError('Medio de pago no encontrado');
@@ -99,8 +99,8 @@ export class MedioPagoModel {
       .request()
       .input('uid', sql.UniqueIdentifier, usuarioId)
       .query(`
-        UPDATE dbo.medios_pago_cliente
-        SET es_predeterminado = 0
+        UPDATE medios_pago_cliente
+        SET es_predeterminado = FALSE
         WHERE usuario_id = @uid
       `);
   }
@@ -140,12 +140,12 @@ export class MedioPagoModel {
       .input('titular', sql.NVarChar(150), input.titular.trim())
       .input('def', sql.Bit, input.es_predeterminado === false ? 0 : 1)
       .query<{ id: string }>(`
-        INSERT INTO dbo.medios_pago_cliente (
+        INSERT INTO medios_pago_cliente (
           usuario_id, tipo, alias, marca, ultimos_4, vencimiento_mes, vencimiento_anio,
           titular, es_predeterminado
         )
-        OUTPUT INSERTED.id
-        VALUES (@uid, N'tarjeta', @alias, @marca, @ultimos, @mes, @anio, @titular, @def)
+        VALUES (@uid, 'tarjeta', @alias, @marca, @ultimos, @mes, @anio, @titular, @def)
+        RETURNING id
       `);
 
     const id = result.recordset[0]?.id;
@@ -171,8 +171,8 @@ export class MedioPagoModel {
       .input('uid', sql.UniqueIdentifier, usuarioId)
       .input('email', sql.NVarChar(255), email)
       .query(`
-        SELECT 1 AS x FROM dbo.medios_pago_cliente
-        WHERE usuario_id = @uid AND activo = 1 AND tipo = N'mercadopago' AND mp_email = @email
+        SELECT 1 AS x FROM medios_pago_cliente
+        WHERE usuario_id = @uid AND activo = TRUE AND tipo = 'mercadopago' AND mp_email = @email
       `);
     if (exists.recordset[0]) {
       throw new ConflictError('Esa cuenta de Mercado Pago ya está cargada');
@@ -191,11 +191,11 @@ export class MedioPagoModel {
       .input('mpalias', sql.NVarChar(80), input.mp_alias?.trim() || null)
       .input('def', sql.Bit, input.es_predeterminado === false ? 0 : 1)
       .query<{ id: string }>(`
-        INSERT INTO dbo.medios_pago_cliente (
+        INSERT INTO medios_pago_cliente (
           usuario_id, tipo, alias, mp_email, mp_alias, es_predeterminado
         )
-        OUTPUT INSERTED.id
-        VALUES (@uid, N'mercadopago', @alias, @email, @mpalias, @def)
+        VALUES (@uid, 'mercadopago', @alias, @email, @mpalias, @def)
+        RETURNING id
       `);
 
     const id = result.recordset[0]?.id;
@@ -209,8 +209,9 @@ export class MedioPagoModel {
       .request()
       .input('uid', sql.UniqueIdentifier, usuarioId)
       .query<MedioRow>(`
-        SELECT TOP 1 * FROM dbo.medios_pago_cliente
-        WHERE usuario_id = @uid AND tipo = N'billetera' AND activo = 1
+        SELECT * FROM medios_pago_cliente
+        WHERE usuario_id = @uid AND tipo = 'billetera' AND activo = TRUE
+        LIMIT 1
       `);
     if (existing.recordset[0]) return mapMedio(existing.recordset[0]);
 
@@ -218,9 +219,9 @@ export class MedioPagoModel {
       .request()
       .input('uid', sql.UniqueIdentifier, usuarioId)
       .query<{ id: string }>(`
-        INSERT INTO dbo.medios_pago_cliente (usuario_id, tipo, alias, saldo)
-        OUTPUT INSERTED.id
-        VALUES (@uid, N'billetera', N'Mi billetera Salta', 0)
+        INSERT INTO medios_pago_cliente (usuario_id, tipo, alias, saldo)
+        VALUES (@uid, 'billetera', 'Mi billetera Salta', 0)
+        RETURNING id
       `);
     return this.getById(usuarioId, result.recordset[0]!.id);
   }
@@ -236,9 +237,9 @@ export class MedioPagoModel {
       .input('id', sql.UniqueIdentifier, billetera.id)
       .input('monto', sql.Decimal(12, 2), monto)
       .query(`
-        UPDATE dbo.medios_pago_cliente
+        UPDATE medios_pago_cliente
         SET saldo = saldo + @monto,
-            fecha_actualizacion = SYSDATETIMEOFFSET()
+            fecha_actualizacion = NOW()
         WHERE id = @id
       `);
     return this.getById(usuarioId, billetera.id);
@@ -253,8 +254,8 @@ export class MedioPagoModel {
       .input('id', sql.UniqueIdentifier, id)
       .input('uid', sql.UniqueIdentifier, usuarioId)
       .query(`
-        UPDATE dbo.medios_pago_cliente
-        SET es_predeterminado = 1, fecha_actualizacion = SYSDATETIMEOFFSET()
+        UPDATE medios_pago_cliente
+        SET es_predeterminado = TRUE, fecha_actualizacion = NOW()
         WHERE id = @id AND usuario_id = @uid
       `);
     return this.getById(usuarioId, id);
@@ -268,8 +269,8 @@ export class MedioPagoModel {
       .input('id', sql.UniqueIdentifier, id)
       .input('uid', sql.UniqueIdentifier, usuarioId)
       .query(`
-        UPDATE dbo.medios_pago_cliente
-        SET activo = 0, es_predeterminado = 0, fecha_actualizacion = SYSDATETIMEOFFSET()
+        UPDATE medios_pago_cliente
+        SET activo = FALSE, es_predeterminado = FALSE, fecha_actualizacion = NOW()
         WHERE id = @id AND usuario_id = @uid
       `);
     return { id, eliminado: true };

@@ -12,12 +12,13 @@ async function main(): Promise<void> {
 
   try {
     await getPool();
-    console.info(`[db] SQL Server conectado → ${env.SQLSERVER_SERVER} / ${env.SQLSERVER_DATABASE}`);
+    const dbLabel = env.DATABASE_URL
+      ? env.DATABASE_URL.replace(/:[^:@/]+@/, ':****@')
+      : `${env.PGHOST}:${env.PGPORT}/${env.PGDATABASE}`;
+    console.info(`[db] PostgreSQL conectado → ${dbLabel}`);
   } catch (err) {
-    console.error('[db] No se pudo conectar a SQL Server:', err);
-    console.error(
-      'Tip: verificá que exista la DB salta_delivery y que Windows Auth o USER/PASSWORD funcionen.',
-    );
+    console.error('[db] No se pudo conectar a PostgreSQL:', err);
+    console.error('Tip: verificá DATABASE_URL / PG* y que exista la DB salta_delivery.');
     process.exit(1);
   }
 

@@ -13,7 +13,7 @@ function uid(req: Request): string {
 
 export class SuscripcionController {
   planes = async (_req: Request, res: Response): Promise<void> => {
-    ok(res, adminModel.planes());
+    ok(res, await adminModel.getPlanes());
   };
 
   miPlan = async (req: Request, res: Response): Promise<void> => {

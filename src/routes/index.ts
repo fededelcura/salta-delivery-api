@@ -21,7 +21,7 @@ router.get('/health', (_req, res) => {
     data: {
       status: 'ok',
       service: 'salta-delivery-api',
-      db: 'SQL Server 2025',
+      db: 'PostgreSQL',
     },
   });
 });

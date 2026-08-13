@@ -16,6 +16,7 @@ import { asignacionService, type CadeteCandidato } from '../services/asignacion.
 import { cadeteModel } from './cadete.model.js';
 import { clienteModel } from './cliente.model.js';
 import { getRedis } from '../config/redis.js';
+import { parseJsonField } from '../utils/json-field.js';
 
 interface ViajeRow {
   id: string;
@@ -34,7 +35,7 @@ interface ViajeRow {
   tarifa_final: number | null;
   comision_plataforma: number | null;
   pago_cadete: number | null;
-  detalle_tarifa: string | null;
+  detalle_tarifa: string | Record<string, unknown> | null;
   estado: EstadoViaje;
   fecha_solicitud: Date;
   tiempo_preparacion_min?: number | null;
@@ -46,14 +47,9 @@ interface ViajeRow {
 }
 
 function mapViaje(row: ViajeRow): Viaje {
-  let detalle: DetalleTarifa | null = null;
-  if (row.detalle_tarifa) {
-    try {
-      detalle = JSON.parse(row.detalle_tarifa) as DetalleTarifa;
-    } catch {
-      detalle = null;
-    }
-  }
+  const detalle = row.detalle_tarifa
+    ? parseJsonField<DetalleTarifa | null>(row.detalle_tarifa, null)
+    : null;
   return {
     id: String(row.id),
     cliente_id: String(row.cliente_id),
@@ -87,13 +83,13 @@ function mapViaje(row: ViajeRow): Viaje {
 
 const SELECT_VIAJE = `
   SELECT id, cliente_id, cadete_id, tipo_servicio,
-         origen_direccion, origen_ubicacion.Lat AS origen_lat, origen_ubicacion.Long AS origen_lng,
-         destino_direccion, destino_ubicacion.Lat AS destino_lat, destino_ubicacion.Long AS destino_lng,
+         origen_direccion, origen_lat, origen_lng,
+         destino_direccion, destino_lat, destino_lng,
          distancia_km, tiempo_estimado_min, tarifa_estimada, tarifa_final,
          comision_plataforma, pago_cadete, detalle_tarifa, estado, fecha_solicitud,
          tiempo_preparacion_min, listo_para_retiro_en,
          metodo_pago, estado_pago, calificacion_cliente, calificacion_cadete
-  FROM dbo.viajes
+  FROM viajes
 `;
 
 export class ViajeModel {
@@ -205,25 +201,25 @@ export class ViajeModel {
       .input('prep', sql.Int, prep || null)
       .input('listo', sql.DateTimeOffset, listoEn)
       .query<{ id: string }>(`
-        INSERT INTO dbo.viajes (
+        INSERT INTO viajes (
           cliente_id, tipo_servicio,
-          origen_direccion, origen_ubicacion,
-          destino_direccion, destino_ubicacion,
+          origen_direccion, origen_lat, origen_lng,
+          destino_direccion, destino_lat, destino_lng,
           distancia_km, tiempo_estimado_min,
           tarifa_estimada, tarifa_final, comision_plataforma, pago_cadete,
           detalle_tarifa, estado, metodo_pago, estado_pago,
           tiempo_preparacion_min, listo_para_retiro_en
         )
-        OUTPUT INSERTED.id
         VALUES (
           @cliente, @tipo,
-          @odir, geography::Point(@olat, @olng, 4326),
-          @ddir, geography::Point(@dlat, @dlng, 4326),
+          @odir, @olat, @olng,
+          @ddir, @dlat, @dlng,
           @dist, @tiempo,
           @tarifa, @tarifa, @comision, @pago,
-          @detalle, N'buscando_cadete', @metodo, N'pendiente',
+          @detalle::jsonb, 'buscando_cadete', @metodo, 'pendiente',
           @prep, @listo
         )
+        RETURNING id
       `);
 
     const id = result.recordset[0]?.id;
@@ -231,19 +227,22 @@ export class ViajeModel {
 
     // Sube demanda de la zona más cercana al origen (para surge)
     try {
+      const haversine = geolocalizacionService.haversineMetersSql('lat_centro', 'lng_centro');
       const poolDem = await getPool();
       await poolDem
         .request()
         .input('lat', sql.Float, input.origen.lat)
         .input('lng', sql.Float, input.origen.lng)
         .query(`
-          UPDATE TOP (1) z
+          UPDATE zonas_hexagonos z
           SET demanda_actual = demanda_actual + 1
-          FROM dbo.zonas_hexagonos z
-          WHERE z.activa = 1
-            AND z.centro.STDistance(geography::Point(@lat, @lng, 4326)) =
-              (SELECT MIN(centro.STDistance(geography::Point(@lat, @lng, 4326)))
-               FROM dbo.zonas_hexagonos WHERE activa = 1)
+          WHERE z.activa = TRUE
+            AND z.h3_index = (
+              SELECT h3_index FROM zonas_hexagonos
+              WHERE activa = TRUE
+              ORDER BY ${haversine}
+              LIMIT 1
+            )
         `);
     } catch {
       /* ignore */
@@ -315,18 +314,18 @@ export class ViajeModel {
     const result = await req.query<ViajeRow & { total: number }>(`
       SELECT COUNT(*) OVER() AS total,
              id, cliente_id, cadete_id, tipo_servicio,
-             origen_direccion, origen_ubicacion.Lat AS origen_lat, origen_ubicacion.Long AS origen_lng,
-             destino_direccion, destino_ubicacion.Lat AS destino_lat, destino_ubicacion.Long AS destino_lng,
+             origen_direccion, origen_lat, origen_lng,
+             destino_direccion, destino_lat, destino_lng,
              distancia_km, tiempo_estimado_min, tarifa_estimada, tarifa_final,
              comision_plataforma, pago_cadete, detalle_tarifa, estado, fecha_solicitud,
              tiempo_preparacion_min, listo_para_retiro_en,
              metodo_pago, estado_pago, calificacion_cliente, calificacion_cadete
-      FROM dbo.viajes
+      FROM viajes
       WHERE (@cliente IS NULL OR cliente_id = @cliente)
         AND (@cadete IS NULL OR cadete_id = @cadete)
         AND (@estado IS NULL OR estado = @estado)
       ORDER BY fecha_solicitud DESC
-      OFFSET @offset ROWS FETCH NEXT @limit ROWS ONLY
+      OFFSET @offset LIMIT @limit
     `);
 
     return {
@@ -351,9 +350,9 @@ export class ViajeModel {
       .input('id', sql.UniqueIdentifier, viajeId)
       .input('motivo', sql.NVarChar(500), motivo ?? null)
       .query(`
-        UPDATE dbo.viajes
-        SET estado = N'cancelado',
-            fecha_cancelacion = SYSDATETIMEOFFSET(),
+        UPDATE viajes
+        SET estado = 'cancelado',
+            fecha_cancelacion = NOW(),
             motivo_cancelacion = @motivo
         WHERE id = @id
       `);
@@ -386,22 +385,20 @@ export class ViajeModel {
       .input('comision', sql.Decimal(12, 2), detalle.comision_plataforma)
       .input('pago', sql.Decimal(12, 2), detalle.pago_cadete)
       .input('detalle', sql.NVarChar(sql.MAX), JSON.stringify(detalle))
-      .query(`
-        UPDATE dbo.viajes
+      .query<{ id: string }>(`
+        UPDATE viajes
         SET cadete_id = @cadete,
-            estado = N'asignado',
-            fecha_asignacion = SYSDATETIMEOFFSET(),
+            estado = 'asignado',
+            fecha_asignacion = NOW(),
             tarifa_final = @tarifa,
             comision_plataforma = @comision,
             pago_cadete = @pago,
-            detalle_tarifa = @detalle
-        WHERE id = @id AND estado IN (N'buscando_cadete', N'solicitado') AND cadete_id IS NULL;
-        SELECT @@ROWCOUNT AS affected;
+            detalle_tarifa = @detalle::jsonb
+        WHERE id = @id AND estado IN ('buscando_cadete', 'solicitado') AND cadete_id IS NULL
+        RETURNING id
       `);
 
-    const affected = Number(
-      (result.recordset[0] as { affected?: number } | undefined)?.affected ?? 0,
-    );
+    const affected = result.recordset.length;
     if (!affected) throw new AppError('Otro cadete ya tomó el viaje', 409, 'RACE');
 
     await cadeteModel.setDisponibilidad(cadeteId, 'en_viaje');
@@ -431,29 +428,32 @@ export class ViajeModel {
       .input('estado', sql.NVarChar(30), estado);
 
     let extra = '';
-    if (estado === 'en_curso') extra = ', fecha_inicio = SYSDATETIMEOFFSET()';
+    if (estado === 'en_curso') extra = ', fecha_inicio = NOW()';
     if (estado === 'finalizado') {
-      extra = ', fecha_fin = SYSDATETIMEOFFSET(), estado_pago = CASE WHEN metodo_pago = N\'efectivo\' THEN N\'aprobado\' ELSE estado_pago END';
+      extra = ", fecha_fin = NOW(), estado_pago = CASE WHEN metodo_pago = 'efectivo' THEN 'aprobado' ELSE estado_pago END";
     }
 
-    await req.query(`UPDATE dbo.viajes SET estado = @estado ${extra} WHERE id = @id`);
+    await req.query(`UPDATE viajes SET estado = @estado ${extra} WHERE id = @id`);
 
     if (estado === 'finalizado') {
       await pool
         .request()
         .input('viaje', sql.UniqueIdentifier, viajeId)
         .input('cadete', sql.UniqueIdentifier, cadeteId)
+        .query(`
+          UPDATE cadetes
+          SET total_viajes = total_viajes + 1,
+              total_ganado = total_ganado + COALESCE((SELECT pago_cadete FROM viajes WHERE id = @viaje), 0)
+          WHERE usuario_id = @cadete
+        `);
+      await pool
+        .request()
         .input('cliente', sql.UniqueIdentifier, viaje.cliente_id)
         .query(`
-          UPDATE dbo.cadetes
-          SET total_viajes = total_viajes + 1,
-              total_ganado = total_ganado + ISNULL((SELECT pago_cadete FROM dbo.viajes WHERE id = @viaje), 0)
-          WHERE usuario_id = @cadete;
-
-          UPDATE dbo.clientes
+          UPDATE clientes
           SET viajes_realizados = viajes_realizados + 1,
               puntos_fidelidad = puntos_fidelidad + 10
-          WHERE usuario_id = @cliente;
+          WHERE usuario_id = @cliente
         `);
       await cadeteModel.setDisponibilidad(cadeteId, 'online');
     }
@@ -481,7 +481,7 @@ export class ViajeModel {
         .input('c', sql.TinyInt, calificacion)
         .input('com', sql.NVarChar(1000), comentario ?? null)
         .query(`
-          UPDATE dbo.viajes
+          UPDATE viajes
           SET calificacion_cliente = @c, comentario_cliente = @com
           WHERE id = @id
         `);
@@ -490,10 +490,10 @@ export class ViajeModel {
           .request()
           .input('cid', sql.UniqueIdentifier, viaje.cadete_id)
           .query(`
-            UPDATE dbo.cadetes
+            UPDATE cadetes
             SET calificacion_promedio = (
               SELECT AVG(CAST(calificacion_cliente AS FLOAT))
-              FROM dbo.viajes
+              FROM viajes
               WHERE cadete_id = @cid AND calificacion_cliente IS NOT NULL
             )
             WHERE usuario_id = @cid
@@ -507,7 +507,7 @@ export class ViajeModel {
         .input('c', sql.TinyInt, calificacion)
         .input('com', sql.NVarChar(1000), comentario ?? null)
         .query(`
-          UPDATE dbo.viajes
+          UPDATE viajes
           SET calificacion_cadete = @c, comentario_cadete = @com
           WHERE id = @id
         `);
@@ -515,10 +515,10 @@ export class ViajeModel {
         .request()
         .input('clid', sql.UniqueIdentifier, viaje.cliente_id)
         .query(`
-          UPDATE dbo.clientes
+          UPDATE clientes
           SET calificacion_promedio = (
             SELECT AVG(CAST(calificacion_cadete AS FLOAT))
-            FROM dbo.viajes
+            FROM viajes
             WHERE cliente_id = @clid AND calificacion_cadete IS NOT NULL
           )
           WHERE usuario_id = @clid

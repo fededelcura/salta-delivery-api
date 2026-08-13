@@ -11,6 +11,13 @@ export type ZonaCercana = {
   dist_m: number;
 };
 
+const HAVERSINE_ZONA = `
+  (6371000 * acos(LEAST(1.0, GREATEST(-1.0,
+    cos(radians(lat_centro)) * cos(radians(@lat)) * cos(radians(@lng) - radians(lng_centro))
+    + sin(radians(lat_centro)) * sin(radians(@lat))
+  ))))
+`;
+
 export async function resolverZonaCercana(
   lat: number,
   lng: number,
@@ -23,12 +30,12 @@ export async function resolverZonaCercana(
       .input('lat', sql.Float, lat)
       .input('lng', sql.Float, lng)
       .query<{ h3_index: string; nombre: string | null; dist_m: number }>(`
-        SELECT TOP 1
-               h3_index, nombre,
-               centro.STDistance(geography::Point(@lat, @lng, 4326)) AS dist_m
-        FROM dbo.zonas_hexagonos
-        WHERE activa = 1
-        ORDER BY centro.STDistance(geography::Point(@lat, @lng, 4326))
+        SELECT h3_index, nombre,
+               ${HAVERSINE_ZONA} AS dist_m
+        FROM zonas_hexagonos
+        WHERE activa = TRUE
+        ORDER BY ${HAVERSINE_ZONA}
+        LIMIT 1
       `);
     const z = r.recordset[0];
     if (!z || Number(z.dist_m) > maxMetros) return null;
@@ -44,8 +51,8 @@ async function cerrarAbiertas(cadeteId: string) {
     .request()
     .input('id', sql.UniqueIdentifier, cadeteId)
     .query(`
-      UPDATE dbo.cadete_sesiones
-      SET hasta = SYSDATETIMEOFFSET()
+      UPDATE cadete_sesiones
+      SET hasta = NOW()
       WHERE cadete_id = @id AND hasta IS NULL
     `);
 }
@@ -69,7 +76,7 @@ async function abrirSesion(params: {
     .input('lat', sql.Float, params.lat ?? null)
     .input('lng', sql.Float, params.lng ?? null)
     .query(`
-      INSERT INTO dbo.cadete_sesiones
+      INSERT INTO cadete_sesiones
         (cadete_id, disponibilidad, zona_h3, zona_nombre, lat, lng)
       VALUES (@id, @d, @zona, @znombre, @lat, @lng)
     `);
@@ -97,9 +104,8 @@ export class CadeteActividadModel {
           .request()
           .input('id', sql.UniqueIdentifier, cadeteId)
           .query<{ zona_actual: string | null; lat: number | null; lng: number | null }>(`
-            SELECT zona_actual,
-                   ubicacion_actual.Lat AS lat, ubicacion_actual.Long AS lng
-            FROM dbo.cadetes WHERE usuario_id = @id
+            SELECT zona_actual, ubicacion_lat AS lat, ubicacion_lng AS lng
+            FROM cadetes WHERE usuario_id = @id
           `);
         const row = cur.recordset[0];
         zona_h3 = row?.zona_actual ?? null;
@@ -111,7 +117,7 @@ export class CadeteActividadModel {
             .request()
             .input('h3', sql.NVarChar(64), zona_h3)
             .query<{ nombre: string | null }>(
-              `SELECT nombre FROM dbo.zonas_hexagonos WHERE h3_index = @h3`,
+              `SELECT nombre FROM zonas_hexagonos WHERE h3_index = @h3`,
             );
           zona_nombre = zn.recordset[0]?.nombre ?? null;
         }
@@ -145,10 +151,11 @@ export class CadeteActividadModel {
         .request()
         .input('id', sql.UniqueIdentifier, cadeteId)
         .query<{ id: string; disponibilidad: string; zona_h3: string | null }>(`
-          SELECT TOP 1 id, disponibilidad, zona_h3
-          FROM dbo.cadete_sesiones
+          SELECT id, disponibilidad, zona_h3
+          FROM cadete_sesiones
           WHERE cadete_id = @id AND hasta IS NULL
           ORDER BY desde DESC
+          LIMIT 1
         `);
       const s = open.recordset[0];
       if (!s) {
@@ -156,7 +163,7 @@ export class CadeteActividadModel {
           .request()
           .input('id', sql.UniqueIdentifier, cadeteId)
           .query<{ disponibilidad: string }>(
-            `SELECT disponibilidad FROM dbo.cadetes WHERE usuario_id = @id`,
+            `SELECT disponibilidad FROM cadetes WHERE usuario_id = @id`,
           );
         const d = disp.recordset[0]?.disponibilidad as DisponibilidadCadete | undefined;
         if (d && d !== 'offline') {
@@ -173,7 +180,7 @@ export class CadeteActividadModel {
         await pool
           .request()
           .input('sid', sql.UniqueIdentifier, s.id)
-          .query(`UPDATE dbo.cadete_sesiones SET hasta = SYSDATETIMEOFFSET() WHERE id = @sid`);
+          .query(`UPDATE cadete_sesiones SET hasta = NOW() WHERE id = @sid`);
         await abrirSesion({
           cadeteId,
           disponibilidad: s.disponibilidad as DisponibilidadCadete,
@@ -191,7 +198,7 @@ export class CadeteActividadModel {
           .input('lat', sql.Float, lat)
           .input('lng', sql.Float, lng)
           .query(`
-            UPDATE dbo.cadete_sesiones
+            UPDATE cadete_sesiones
             SET zona_h3 = @zona, zona_nombre = @znombre, lat = @lat, lng = @lng
             WHERE id = @sid
           `);
@@ -228,16 +235,16 @@ export class CadeteActividadModel {
     }>(`
       SELECT c.usuario_id, u.nombre, c.disponibilidad, c.zona_actual,
              z.nombre AS zona_nombre,
-             c.ubicacion_actual.Lat AS lat, c.ubicacion_actual.Long AS lng,
+             c.ubicacion_lat AS lat, c.ubicacion_lng AS lng,
              c.ubicacion_actualizada_en,
              s.desde AS desde_sesion,
              c.plan_suscripcion, c.total_viajes
-      FROM dbo.cadetes c
-      INNER JOIN dbo.usuarios u ON u.id = c.usuario_id
-      LEFT JOIN dbo.zonas_hexagonos z ON z.h3_index = c.zona_actual
-      LEFT JOIN dbo.cadete_sesiones s ON s.cadete_id = c.usuario_id AND s.hasta IS NULL
-      WHERE c.disponibilidad IN (N'online', N'en_viaje', N'ocupado')
-        AND c.estado_verificacion = N'aprobado'
+      FROM cadetes c
+      INNER JOIN usuarios u ON u.id = c.usuario_id
+      LEFT JOIN zonas_hexagonos z ON z.h3_index = c.zona_actual
+      LEFT JOIN cadete_sesiones s ON s.cadete_id = c.usuario_id AND s.hasta IS NULL
+      WHERE c.disponibilidad IN ('online', 'en_viaje', 'ocupado')
+        AND c.estado_verificacion = 'aprobado'
       ORDER BY c.disponibilidad, u.nombre
     `);
 
@@ -260,22 +267,22 @@ export class CadeteActividadModel {
         WITH sesiones AS (
           SELECT s.cadete_id, s.disponibilidad, s.zona_h3, s.zona_nombre,
                  CASE WHEN s.desde < @desde THEN @desde ELSE s.desde END AS d0,
-                 CASE WHEN COALESCE(s.hasta, SYSDATETIMEOFFSET()) > @hasta
+                 CASE WHEN COALESCE(s.hasta, NOW()) > @hasta
                       THEN @hasta
-                      ELSE COALESCE(s.hasta, SYSDATETIMEOFFSET()) END AS d1
-          FROM dbo.cadete_sesiones s
+                      ELSE COALESCE(s.hasta, NOW()) END AS d1
+          FROM cadete_sesiones s
           WHERE s.desde < @hasta
-            AND COALESCE(s.hasta, SYSDATETIMEOFFSET()) > @desde
+            AND COALESCE(s.hasta, NOW()) > @desde
             AND (@cadete IS NULL OR s.cadete_id = @cadete)
         ),
         horas AS (
           SELECT cadete_id,
-            SUM(CASE WHEN disponibilidad = N'online'
-                     THEN DATEDIFF(minute, d0, d1) ELSE 0 END) AS minutos_online,
-            SUM(CASE WHEN disponibilidad = N'en_viaje'
-                     THEN DATEDIFF(minute, d0, d1) ELSE 0 END) AS minutos_en_viaje,
-            SUM(CASE WHEN disponibilidad = N'ocupado'
-                     THEN DATEDIFF(minute, d0, d1) ELSE 0 END) AS minutos_ocupado,
+            SUM(CASE WHEN disponibilidad = 'online'
+                     THEN EXTRACT(EPOCH FROM (d1 - d0)) / 60 ELSE 0 END) AS minutos_online,
+            SUM(CASE WHEN disponibilidad = 'en_viaje'
+                     THEN EXTRACT(EPOCH FROM (d1 - d0)) / 60 ELSE 0 END) AS minutos_en_viaje,
+            SUM(CASE WHEN disponibilidad = 'ocupado'
+                     THEN EXTRACT(EPOCH FROM (d1 - d0)) / 60 ELSE 0 END) AS minutos_ocupado,
             COUNT(DISTINCT zona_h3) AS zonas_distintas
           FROM sesiones
           WHERE d1 > d0
@@ -284,10 +291,10 @@ export class CadeteActividadModel {
         viajes AS (
           SELECT v.cadete_id,
                  COUNT(*) AS viajes_finalizados,
-                 SUM(ISNULL(v.distancia_km, 0)) AS km_totales,
-                 SUM(ISNULL(v.pago_cadete, 0)) AS ganado
-          FROM dbo.viajes v
-          WHERE v.estado = N'finalizado'
+                 SUM(COALESCE(v.distancia_km, 0)) AS km_totales,
+                 SUM(COALESCE(v.pago_cadete, 0)) AS ganado
+          FROM viajes v
+          WHERE v.estado = 'finalizado'
             AND v.cadete_id IS NOT NULL
             AND COALESCE(v.fecha_fin, v.fecha_solicitud) >= @desde
             AND COALESCE(v.fecha_fin, v.fecha_solicitud) < @hasta
@@ -296,17 +303,17 @@ export class CadeteActividadModel {
         )
         SELECT COALESCE(h.cadete_id, vj.cadete_id) AS cadete_id,
                u.nombre,
-               ISNULL(h.minutos_online, 0) AS minutos_online,
-               ISNULL(h.minutos_en_viaje, 0) AS minutos_en_viaje,
-               ISNULL(h.minutos_ocupado, 0) AS minutos_ocupado,
-               ISNULL(vj.viajes_finalizados, 0) AS viajes_finalizados,
-               ISNULL(vj.km_totales, 0) AS km_totales,
-               ISNULL(vj.ganado, 0) AS ganado,
-               ISNULL(h.zonas_distintas, 0) AS zonas_distintas
+               COALESCE(h.minutos_online, 0) AS minutos_online,
+               COALESCE(h.minutos_en_viaje, 0) AS minutos_en_viaje,
+               COALESCE(h.minutos_ocupado, 0) AS minutos_ocupado,
+               COALESCE(vj.viajes_finalizados, 0) AS viajes_finalizados,
+               COALESCE(vj.km_totales, 0) AS km_totales,
+               COALESCE(vj.ganado, 0) AS ganado,
+               COALESCE(h.zonas_distintas, 0) AS zonas_distintas
         FROM horas h
         FULL OUTER JOIN viajes vj ON vj.cadete_id = h.cadete_id
-        INNER JOIN dbo.usuarios u ON u.id = COALESCE(h.cadete_id, vj.cadete_id)
-        ORDER BY ISNULL(h.minutos_online, 0) + ISNULL(h.minutos_en_viaje, 0) DESC
+        INNER JOIN usuarios u ON u.id = COALESCE(h.cadete_id, vj.cadete_id)
+        ORDER BY COALESCE(h.minutos_online, 0) + COALESCE(h.minutos_en_viaje, 0) DESC
       `);
 
     const porZona = await pool
@@ -321,27 +328,23 @@ export class CadeteActividadModel {
         cadetes_unicos: number;
       }>(`
         SELECT s.zona_h3,
-               MAX(COALESCE(s.zona_nombre, z.nombre, N'Sin zona')) AS zona_nombre,
-               SUM(DATEDIFF(minute,
-                 CASE WHEN s.desde < @desde THEN @desde ELSE s.desde END,
-                 CASE WHEN COALESCE(s.hasta, SYSDATETIMEOFFSET()) > @hasta
-                      THEN @hasta
-                      ELSE COALESCE(s.hasta, SYSDATETIMEOFFSET()) END
-               )) AS minutos,
+               MAX(COALESCE(s.zona_nombre, z.nombre, 'Sin zona')) AS zona_nombre,
+               SUM(EXTRACT(EPOCH FROM (
+                 (CASE WHEN COALESCE(s.hasta, NOW()) > @hasta THEN @hasta ELSE COALESCE(s.hasta, NOW()) END)
+                 - (CASE WHEN s.desde < @desde THEN @desde ELSE s.desde END)
+               )) / 60) AS minutos,
                COUNT(DISTINCT s.cadete_id) AS cadetes_unicos
-        FROM dbo.cadete_sesiones s
-        LEFT JOIN dbo.zonas_hexagonos z ON z.h3_index = s.zona_h3
+        FROM cadete_sesiones s
+        LEFT JOIN zonas_hexagonos z ON z.h3_index = s.zona_h3
         WHERE s.desde < @hasta
-          AND COALESCE(s.hasta, SYSDATETIMEOFFSET()) > @desde
-          AND s.disponibilidad IN (N'online', N'en_viaje', N'ocupado')
+          AND COALESCE(s.hasta, NOW()) > @desde
+          AND s.disponibilidad IN ('online', 'en_viaje', 'ocupado')
           AND (@cadete IS NULL OR s.cadete_id = @cadete)
         GROUP BY s.zona_h3
-        HAVING SUM(DATEDIFF(minute,
-                 CASE WHEN s.desde < @desde THEN @desde ELSE s.desde END,
-                 CASE WHEN COALESCE(s.hasta, SYSDATETIMEOFFSET()) > @hasta
-                      THEN @hasta
-                      ELSE COALESCE(s.hasta, SYSDATETIMEOFFSET()) END
-               )) > 0
+        HAVING SUM(EXTRACT(EPOCH FROM (
+                 (CASE WHEN COALESCE(s.hasta, NOW()) > @hasta THEN @hasta ELSE COALESCE(s.hasta, NOW()) END)
+                 - (CASE WHEN s.desde < @desde THEN @desde ELSE s.desde END)
+               )) / 60) > 0
         ORDER BY minutos DESC
       `);
 
@@ -352,27 +355,26 @@ export class CadeteActividadModel {
       .input('cadete', sql.UniqueIdentifier, cadeteId)
       .query<{ hora: number; minutos_cubiertos: number; viajes: number }>(`
         WITH horas AS (
-          SELECT TOP (24) ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) - 1 AS hora
-          FROM sys.all_objects
+          SELECT generate_series(0, 23) AS hora
         ),
         ses AS (
           SELECT s.cadete_id, s.disponibilidad,
                  CASE WHEN s.desde < @desde THEN @desde ELSE s.desde END AS d0,
-                 CASE WHEN COALESCE(s.hasta, SYSDATETIMEOFFSET()) > @hasta
+                 CASE WHEN COALESCE(s.hasta, NOW()) > @hasta
                       THEN @hasta
-                      ELSE COALESCE(s.hasta, SYSDATETIMEOFFSET()) END AS d1
-          FROM dbo.cadete_sesiones s
+                      ELSE COALESCE(s.hasta, NOW()) END AS d1
+          FROM cadete_sesiones s
           WHERE s.desde < @hasta
-            AND COALESCE(s.hasta, SYSDATETIMEOFFSET()) > @desde
-            AND s.disponibilidad IN (N'online', N'en_viaje', N'ocupado')
+            AND COALESCE(s.hasta, NOW()) > @desde
+            AND s.disponibilidad IN ('online', 'en_viaje', 'ocupado')
             AND (@cadete IS NULL OR s.cadete_id = @cadete)
         ),
         cov AS (
           SELECT h.hora,
                  SUM(
                    CASE
-                     WHEN DATEPART(hour, SWITCHOFFSET(d0, '-03:00')) <= h.hora
-                      AND DATEPART(hour, SWITCHOFFSET(d1, '-03:00')) >= h.hora
+                     WHEN EXTRACT(HOUR FROM timezone('America/Argentina/Salta', d0)) <= h.hora
+                      AND EXTRACT(HOUR FROM timezone('America/Argentina/Salta', d1)) >= h.hora
                       AND d1 > d0
                      THEN 1 ELSE 0
                    END
@@ -382,19 +384,21 @@ export class CadeteActividadModel {
           GROUP BY h.hora
         ),
         vj AS (
-          SELECT DATEPART(hour, SWITCHOFFSET(COALESCE(v.fecha_fin, v.fecha_solicitud), '-03:00')) AS hora,
+          SELECT EXTRACT(HOUR FROM timezone('America/Argentina/Salta',
+                   COALESCE(v.fecha_fin, v.fecha_solicitud)))::int AS hora,
                  COUNT(*) AS viajes
-          FROM dbo.viajes v
-          WHERE v.estado = N'finalizado'
+          FROM viajes v
+          WHERE v.estado = 'finalizado'
             AND v.cadete_id IS NOT NULL
             AND COALESCE(v.fecha_fin, v.fecha_solicitud) >= @desde
             AND COALESCE(v.fecha_fin, v.fecha_solicitud) < @hasta
             AND (@cadete IS NULL OR v.cadete_id = @cadete)
-          GROUP BY DATEPART(hour, SWITCHOFFSET(COALESCE(v.fecha_fin, v.fecha_solicitud), '-03:00'))
+          GROUP BY EXTRACT(HOUR FROM timezone('America/Argentina/Salta',
+                   COALESCE(v.fecha_fin, v.fecha_solicitud)))
         )
         SELECT h.hora,
-               ISNULL(c.minutos_cubiertos, 0) AS minutos_cubiertos,
-               ISNULL(vj.viajes, 0) AS viajes
+               COALESCE(c.minutos_cubiertos, 0) AS minutos_cubiertos,
+               COALESCE(vj.viajes, 0) AS viajes
         FROM horas h
         LEFT JOIN cov c ON c.hora = h.hora
         LEFT JOIN vj ON vj.hora = h.hora

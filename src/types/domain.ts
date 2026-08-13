@@ -74,7 +74,7 @@ export type EstadoIncidencia =
   | 'cerrada'
   | 'escalada';
 
-/** Coordenada WGS84 (SQL Server geography::Point usa lat, lng) */
+/** Coordenada WGS84 (lat, lng) */
 export interface Coordenada {
   lat: number;
   lng: number;

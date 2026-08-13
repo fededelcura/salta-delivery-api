@@ -1,10 +1,16 @@
 import { ConflictError } from './errors.js';
 
-/** Traduce violaciones UNIQUE de SQL Server a mensajes claros. */
+/** Traduce violaciones UNIQUE de PostgreSQL (23505) a mensajes claros. */
 export function rethrowSqlConflict(e: unknown): never {
-  const err = e as { number?: number; message?: string };
+  const err = e as { number?: number; code?: string; message?: string };
   const msg = (err.message ?? '').toLowerCase();
-  const isUnique = err.number === 2627 || err.number === 2601 || msg.includes('unique');
+  const isUnique =
+    err.code === '23505' ||
+    err.number === 23505 ||
+    err.number === 2627 ||
+    err.number === 2601 ||
+    msg.includes('unique') ||
+    msg.includes('duplicate key');
 
   if (isUnique) {
     if (msg.includes('email') || msg.includes('uq_usuarios_email')) {

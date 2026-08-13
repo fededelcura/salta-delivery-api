@@ -79,11 +79,11 @@ export class FacturacionService {
         .input('pago', sql.Decimal(12, 2), pago_cadete)
         .input('detalle', sql.NVarChar(sql.MAX), JSON.stringify(detalleBase))
         .query(`
-          UPDATE dbo.viajes
+          UPDATE viajes
           SET tarifa_final = @tarifa,
               comision_plataforma = @comision,
               pago_cadete = @pago,
-              detalle_tarifa = @detalle
+              detalle_tarifa = @detalle::jsonb
           WHERE id = @id
         `);
 
@@ -94,7 +94,7 @@ export class FacturacionService {
           .input('cid', sql.UniqueIdentifier, viaje.cadete_id)
           .input('delta', sql.Decimal(12, 2), delta)
           .query(`
-            UPDATE dbo.cadetes
+            UPDATE cadetes
             SET total_ganado = total_ganado + @delta
             WHERE usuario_id = @cid
           `);
@@ -153,15 +153,14 @@ export class FacturacionService {
           JSON.stringify({ comprobante_numero: numCliente, tipo: 'viaje' }),
         )
         .query(`
-          IF NOT EXISTS (
-            SELECT 1 FROM dbo.pagos
-            WHERE viaje_id = @viaje AND tipo = N'viaje' AND usuario_id = @uid
-          )
-          INSERT INTO dbo.pagos (
+          INSERT INTO pagos (
             usuario_id, viaje_id, tipo, monto, metodo_pago, estado, fecha_pago, metadata_json, factura_url
-          ) VALUES (
-            @uid, @viaje, N'viaje', @monto, @metodo, N'aprobado', SYSDATETIMEOFFSET(), @meta, @url
-          );
+          )
+          SELECT @uid, @viaje, 'viaje', @monto, @metodo, 'aprobado', NOW(), @meta, @url
+          WHERE NOT EXISTS (
+            SELECT 1 FROM pagos
+            WHERE viaje_id = @viaje AND tipo = 'viaje' AND usuario_id = @uid
+          )
         `);
 
       await new sql.Request(tx)
@@ -181,15 +180,14 @@ export class FacturacionService {
           }),
         )
         .query(`
-          IF NOT EXISTS (
-            SELECT 1 FROM dbo.pagos
-            WHERE viaje_id = @viaje AND tipo = N'comision'
-          )
-          INSERT INTO dbo.pagos (
+          INSERT INTO pagos (
             usuario_id, viaje_id, tipo, monto, metodo_pago, estado, fecha_pago, metadata_json, factura_url
-          ) VALUES (
-            @uid, @viaje, N'comision', @monto, @metodo, N'aprobado', SYSDATETIMEOFFSET(), @meta, @url
-          );
+          )
+          SELECT @uid, @viaje, 'comision', @monto, @metodo, 'aprobado', NOW(), @meta, @url
+          WHERE NOT EXISTS (
+            SELECT 1 FROM pagos
+            WHERE viaje_id = @viaje AND tipo = 'comision'
+          )
         `);
 
       await tx.commit();

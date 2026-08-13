@@ -1,5 +1,6 @@
 import { getPool, sql } from '../config/database.js';
 import { NotFoundError, ValidationError } from '../utils/errors.js';
+import { parseJsonField } from '../utils/json-field.js';
 
 export type Liquidacion = {
   id: string;
@@ -27,10 +28,10 @@ export type Liquidacion = {
 async function plazoDias(): Promise<number> {
   try {
     const pool = await getPool();
-    const r = await pool.request().query<{ valor: string }>(`
-      SELECT valor FROM dbo.configuraciones WHERE clave = N'liquidacion.plazo_dias'
+    const r = await pool.request().query<{ valor: unknown }>(`
+      SELECT valor FROM configuraciones WHERE clave = 'liquidacion.plazo_dias'
     `);
-    const parsed = JSON.parse(r.recordset[0]?.valor ?? '{"dias":7}') as { dias?: number };
+    const parsed = parseJsonField<{ dias?: number }>(r.recordset[0]?.valor, { dias: 7 });
     return Math.min(Math.max(Number(parsed.dias ?? 7), 1), 60);
   } catch {
     return 7;
@@ -72,8 +73,7 @@ export class LiquidacionModel {
       .input('titular', sql.NVarChar(150), input.titular_destino)
       .input('plazo', sql.Int, dias)
       .query(`
-        IF NOT EXISTS (SELECT 1 FROM dbo.liquidaciones WHERE viaje_id = @viaje)
-        INSERT INTO dbo.liquidaciones (
+        INSERT INTO liquidaciones (
           viaje_id, cadete_id, cliente_id, comprobante_id,
           tarifa_cliente, comision_retenida, comision_pct, monto_a_transferir,
           metodo_pago_cliente, cbu_destino, alias_destino, banco_destino, titular_destino,
@@ -82,8 +82,9 @@ export class LiquidacionModel {
           @viaje, @cadete, @cliente, @comp,
           @tarifa, @comision, @pct, @monto,
           @metodo, @cbu, @alias, @banco, @titular,
-          @plazo, DATEADD(day, @plazo, SYSDATETIMEOFFSET()), N'pendiente'
+          @plazo, NOW() + INTERVAL '1 day' * @plazo, 'pendiente'
         )
+        ON CONFLICT ON CONSTRAINT uq_liquidaciones_viaje DO NOTHING
       `);
   }
 
@@ -115,16 +116,16 @@ export class LiquidacionModel {
         cadete_nombre: string;
         cliente_nombre: string;
       }>(`
-        SELECT TOP 100
-               l.*,
+        SELECT l.*,
                cad.nombre AS cadete_nombre,
                cli.nombre AS cliente_nombre
-        FROM dbo.liquidaciones l
-        INNER JOIN dbo.usuarios cad ON cad.id = l.cadete_id
-        INNER JOIN dbo.usuarios cli ON cli.id = l.cliente_id
+        FROM liquidaciones l
+        INNER JOIN usuarios cad ON cad.id = l.cadete_id
+        INNER JOIN usuarios cli ON cli.id = l.cliente_id
         WHERE (@estado IS NULL OR l.estado = @estado)
           AND (@cadete IS NULL OR l.cadete_id = @cadete)
         ORDER BY l.fecha_limite ASC, l.fecha_creacion DESC
+        LIMIT 100
       `);
 
     return result.recordset.map(
@@ -161,15 +162,15 @@ export class LiquidacionModel {
       .request()
       .input('id', sql.UniqueIdentifier, id)
       .input('nota', sql.NVarChar(500), nota ?? null)
-      .query(`
-        UPDATE dbo.liquidaciones
-        SET estado = N'transferida',
-            fecha_transferencia = SYSDATETIMEOFFSET(),
+      .query<{ id: string }>(`
+        UPDATE liquidaciones
+        SET estado = 'transferida',
+            fecha_transferencia = NOW(),
             nota = COALESCE(@nota, nota)
-        WHERE id = @id;
-        SELECT @@ROWCOUNT AS n;
+        WHERE id = @id
+        RETURNING id
       `);
-    if (!Number(result.recordset[0]?.n)) throw new NotFoundError('Liquidación no encontrada');
+    if (!result.recordset[0]) throw new NotFoundError('Liquidación no encontrada');
     const items = await this.listar({});
     const found = items.find((x) => x.id === id);
     if (!found) throw new NotFoundError('Liquidación no encontrada');
@@ -187,9 +188,9 @@ export class LiquidacionModel {
       .request()
       .input('valor', sql.NVarChar(sql.MAX), JSON.stringify({ dias }))
       .query(`
-        UPDATE dbo.configuraciones
-        SET valor = @valor
-        WHERE clave = N'liquidacion.plazo_dias'
+        UPDATE configuraciones
+        SET valor = @valor::jsonb
+        WHERE clave = 'liquidacion.plazo_dias'
       `);
     return { dias };
   }

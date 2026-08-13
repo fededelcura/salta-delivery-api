@@ -291,3 +291,84 @@ export const liquidacionPlazoSchema = z.object({
 export const liquidacionTransferirSchema = z.object({
   nota: z.string().max(500).optional(),
 });
+
+export const adminActualizarClienteSchema = z.object({
+  nombre: z.string().min(2).max(150).optional(),
+  email: z.string().email().optional(),
+  telefono: z.string().min(8).max(20).optional(),
+  dni: z.string().min(7).max(20).optional(),
+  plan_suscripcion: z.enum(['gratuito', 'basico', 'plus', 'business']).optional(),
+  tipo_cuenta: z.enum(['particular', 'restaurante', 'comercio']).optional(),
+  tiempo_preparacion_min: z.number().int().min(0).max(180).optional(),
+  horario_comercial: z
+    .object({
+      abre: z.string().optional(),
+      cierra: z.string().optional(),
+      dias: z.array(z.number().int().min(0).max(6)).optional(),
+    })
+    .optional()
+    .nullable(),
+  direccion_parts: direccionEstructuradaSchema.optional(),
+  estado: z.enum(['activo', 'inactivo', 'suspendido']).optional(),
+});
+
+export const adminActualizarCadeteSchema = z.object({
+  nombre: z.string().min(2).max(150).optional(),
+  email: z.string().email().optional(),
+  telefono: z.string().min(8).max(20).optional(),
+  dni: z.string().min(7).max(20).optional(),
+  licencia: z.string().min(3).max(50).optional(),
+  patente: z.string().min(5).max(20).optional(),
+  marca_moto: z.string().max(50).optional().nullable(),
+  direccion_parts: direccionEstructuradaSchema.optional(),
+  cbu: z.string().regex(/^\d{22}$/).optional().nullable(),
+  alias_bancario: z.string().max(80).optional().nullable(),
+  banco: z.string().max(80).optional().nullable(),
+  titular_cuenta: z.string().max(150).optional().nullable(),
+  plan_suscripcion: z.enum(['trial', 'silver', 'gold', 'premium']).optional(),
+  estado: z.enum(['activo', 'inactivo', 'suspendido']).optional(),
+});
+
+export const adminZonaSchema = z.object({
+  h3_index: z.string().min(3).max(64),
+  nombre: z.string().max(100).optional().nullable(),
+  tipo: z
+    .enum([
+      'residencial',
+      'comercial',
+      'industrial',
+      'aeropuerto',
+      'centro',
+      'periferia',
+      'restringida',
+    ])
+    .default('residencial'),
+  lat_centro: z.number().min(-90).max(90),
+  lng_centro: z.number().min(-180).max(180),
+  tarifa_multiplier: z.number().positive().max(10).default(1),
+  activa: z.boolean().optional().default(true),
+});
+
+export const adminActualizarZonaSchema = adminZonaSchema.partial();
+
+export const adminPlanesSchema = z.object({
+  cliente: z
+    .array(
+      z.object({
+        plan: z.enum(['gratuito', 'basico', 'plus', 'business']),
+        monto_mensual: z.number().min(0),
+        descuento_pct: z.number().min(0).max(100),
+      }),
+    )
+    .optional(),
+  cadete: z
+    .array(
+      z.object({
+        plan: z.enum(['trial', 'silver', 'gold', 'premium']),
+        monto_mensual: z.number().min(0),
+        comision_pct: z.number().min(0).max(100),
+        dias_trial: z.number().int().min(0).max(365).optional(),
+      }),
+    )
+    .optional(),
+});

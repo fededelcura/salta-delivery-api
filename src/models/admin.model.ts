@@ -1,6 +1,7 @@
-import { getPool, sql } from '../config/database.js';
+import { getPool, sql, SqlRequest } from '../config/database.js';
 import type { DashboardKpis } from '../types/domain.js';
 import { NotFoundError } from '../utils/errors.js';
+import { parseJsonField, requireJsonField } from '../utils/json-field.js';
 
 export class AdminModel {
   async dashboard(): Promise<DashboardKpis> {
@@ -19,33 +20,33 @@ export class AdminModel {
       incidencias_abiertas: number;
     }>(`
       SELECT
-        (SELECT COUNT(*) FROM dbo.viajes WHERE CAST(fecha_solicitud AS DATE) = CAST(SYSDATETIMEOFFSET() AS DATE)) AS viajes_hoy,
-        (SELECT COUNT(*) FROM dbo.viajes WHERE estado NOT IN (N'finalizado', N'cancelado')) AS viajes_activos,
-        (SELECT COUNT(*) FROM dbo.cadetes WHERE disponibilidad = N'online') AS cadetes_online,
-        (SELECT COUNT(*) FROM dbo.usuarios WHERE rol = N'cliente' AND estado = N'activo') AS clientes_activos,
+        (SELECT COUNT(*) FROM viajes WHERE fecha_solicitud::date = CURRENT_DATE) AS viajes_hoy,
+        (SELECT COUNT(*) FROM viajes WHERE estado NOT IN ('finalizado', 'cancelado')) AS viajes_activos,
+        (SELECT COUNT(*) FROM cadetes WHERE disponibilidad = 'online') AS cadetes_online,
+        (SELECT COUNT(*) FROM usuarios WHERE rol = 'cliente' AND estado = 'activo') AS clientes_activos,
         (SELECT COUNT(*)
-           FROM dbo.clientes c
-           INNER JOIN dbo.usuarios u ON u.id = c.usuario_id
-           WHERE u.estado = N'activo'
-             AND ISNULL(c.tipo_cuenta, N'particular') = N'particular') AS usuarios_activos,
+           FROM clientes c
+           INNER JOIN usuarios u ON u.id = c.usuario_id
+           WHERE u.estado = 'activo'
+             AND COALESCE(c.tipo_cuenta, 'particular') = 'particular') AS usuarios_activos,
         (SELECT COUNT(*)
-           FROM dbo.clientes c
-           INNER JOIN dbo.usuarios u ON u.id = c.usuario_id
-           WHERE u.estado = N'activo'
-             AND c.tipo_cuenta IN (N'restaurante', N'comercio')) AS negocios_activos,
+           FROM clientes c
+           INNER JOIN usuarios u ON u.id = c.usuario_id
+           WHERE u.estado = 'activo'
+             AND c.tipo_cuenta IN ('restaurante', 'comercio')) AS negocios_activos,
         (SELECT COUNT(*)
-           FROM dbo.clientes c
-           INNER JOIN dbo.usuarios u ON u.id = c.usuario_id
-           WHERE u.estado = N'activo' AND c.tipo_cuenta = N'restaurante') AS restaurantes_activos,
+           FROM clientes c
+           INNER JOIN usuarios u ON u.id = c.usuario_id
+           WHERE u.estado = 'activo' AND c.tipo_cuenta = 'restaurante') AS restaurantes_activos,
         (SELECT COUNT(*)
-           FROM dbo.clientes c
-           INNER JOIN dbo.usuarios u ON u.id = c.usuario_id
-           WHERE u.estado = N'activo' AND c.tipo_cuenta = N'comercio') AS comercios_activos,
-        (SELECT ISNULL(SUM(tarifa_final),0) FROM dbo.viajes
-           WHERE estado = N'finalizado' AND CAST(fecha_fin AS DATE) = CAST(SYSDATETIMEOFFSET() AS DATE)) AS ingresos_hoy,
-        (SELECT ISNULL(SUM(comision_plataforma),0) FROM dbo.viajes
-           WHERE estado = N'finalizado' AND CAST(fecha_fin AS DATE) = CAST(SYSDATETIMEOFFSET() AS DATE)) AS comisiones_hoy,
-        (SELECT COUNT(*) FROM dbo.incidencias WHERE estado IN (N'abierta', N'en_proceso', N'escalada')) AS incidencias_abiertas
+           FROM clientes c
+           INNER JOIN usuarios u ON u.id = c.usuario_id
+           WHERE u.estado = 'activo' AND c.tipo_cuenta = 'comercio') AS comercios_activos,
+        (SELECT COALESCE(SUM(tarifa_final), 0) FROM viajes
+           WHERE estado = 'finalizado' AND fecha_fin::date = CURRENT_DATE) AS ingresos_hoy,
+        (SELECT COALESCE(SUM(comision_plataforma), 0) FROM viajes
+           WHERE estado = 'finalizado' AND fecha_fin::date = CURRENT_DATE) AS comisiones_hoy,
+        (SELECT COUNT(*) FROM incidencias WHERE estado IN ('abierta', 'en_proceso', 'escalada')) AS incidencias_abiertas
     `);
     const r = result.recordset[0];
     return {
@@ -101,7 +102,7 @@ export class AdminModel {
     const cadeteId = opts.cadete_id || null;
     const clienteId = opts.cliente_id || null;
 
-    const bindFilters = (req: sql.Request) =>
+    const bindFilters = (req: SqlRequest) =>
       req
         .input('dias', sql.Int, d)
         .input('tiposCsv', sql.NVarChar(200), tiposCsv)
@@ -114,25 +115,35 @@ export class AdminModel {
     const filtroTipoMetodo = `
       AND (
         @tiposCsv IS NULL
-        OR tipo_servicio IN (SELECT LTRIM(RTRIM(value)) FROM STRING_SPLIT(@tiposCsv, ','))
+        OR tipo_servicio IN (
+          SELECT trim(both from unnest(string_to_array(@tiposCsv, ',')))
+        )
       )
       AND (
         @metodosCsv IS NULL
-        OR metodo_pago IN (SELECT LTRIM(RTRIM(value)) FROM STRING_SPLIT(@metodosCsv, ','))
+        OR metodo_pago IN (
+          SELECT trim(both from unnest(string_to_array(@metodosCsv, ',')))
+        )
       )
       AND (@cadete IS NULL OR cadete_id = @cadete)
       AND (@cliente IS NULL OR cliente_id = @cliente)
       AND (
         @franjasCsv IS NULL
-        OR ISNULL(JSON_VALUE(detalle_tarifa, '$.franja_hora'), N'valle')
-           IN (SELECT LTRIM(RTRIM(value)) FROM STRING_SPLIT(@franjasCsv, ','))
+        OR COALESCE(detalle_tarifa::jsonb->>'franja_hora', 'valle')
+           IN (
+             SELECT trim(both from unnest(string_to_array(@franjasCsv, ',')))
+           )
       )
       AND (
         @zonasCsv IS NULL
-        OR ISNULL(JSON_VALUE(detalle_tarifa, '$.zona_nombre'), N'')
-           IN (SELECT LTRIM(RTRIM(value)) FROM STRING_SPLIT(@zonasCsv, ','))
-        OR ISNULL(JSON_VALUE(detalle_tarifa, '$.zona_h3'), N'')
-           IN (SELECT LTRIM(RTRIM(value)) FROM STRING_SPLIT(@zonasCsv, ','))
+        OR COALESCE(detalle_tarifa::jsonb->>'zona_nombre', '')
+           IN (
+             SELECT trim(both from unnest(string_to_array(@zonasCsv, ',')))
+           )
+        OR COALESCE(detalle_tarifa::jsonb->>'zona_h3', '')
+           IN (
+             SELECT trim(both from unnest(string_to_array(@zonasCsv, ',')))
+           )
       )
     `;
 
@@ -143,16 +154,16 @@ export class AdminModel {
       comisiones: number;
       egresos: number;
     }>(`
-      SELECT FORMAT(fecha_fin, 'yyyy-MM-dd') AS dia,
+      SELECT TO_CHAR(fecha_fin, 'YYYY-MM-DD') AS dia,
              COUNT(*) AS viajes,
-             SUM(ISNULL(tarifa_final,0)) AS ingresos,
-             SUM(ISNULL(comision_plataforma,0)) AS comisiones,
-             SUM(ISNULL(pago_cadete,0)) AS egresos
-      FROM dbo.viajes
-      WHERE estado = N'finalizado'
-        AND fecha_fin >= DATEADD(day, -@dias, SYSDATETIMEOFFSET())
+             SUM(COALESCE(tarifa_final, 0)) AS ingresos,
+             SUM(COALESCE(comision_plataforma, 0)) AS comisiones,
+             SUM(COALESCE(pago_cadete, 0)) AS egresos
+      FROM viajes
+      WHERE estado = 'finalizado'
+        AND fecha_fin >= NOW() - INTERVAL '1 day' * @dias
         ${filtroTipoMetodo}
-      GROUP BY FORMAT(fecha_fin, 'yyyy-MM-dd')
+      GROUP BY TO_CHAR(fecha_fin, 'YYYY-MM-DD')
       ORDER BY dia
     `);
 
@@ -161,8 +172,8 @@ export class AdminModel {
       cantidad: number;
     }>(`
       SELECT estado, COUNT(*) AS cantidad
-      FROM dbo.viajes
-      WHERE fecha_solicitud >= DATEADD(day, -@dias, SYSDATETIMEOFFSET())
+      FROM viajes
+      WHERE fecha_solicitud >= NOW() - INTERVAL '1 day' * @dias
         ${filtroTipoMetodo}
       GROUP BY estado
     `);
@@ -175,11 +186,11 @@ export class AdminModel {
     }>(`
       SELECT tipo_servicio,
              COUNT(*) AS viajes,
-             SUM(ISNULL(tarifa_final,0)) AS ingresos,
-             SUM(ISNULL(comision_plataforma,0)) AS comisiones
-      FROM dbo.viajes
-      WHERE estado = N'finalizado'
-        AND fecha_fin >= DATEADD(day, -@dias, SYSDATETIMEOFFSET())
+             SUM(COALESCE(tarifa_final, 0)) AS ingresos,
+             SUM(COALESCE(comision_plataforma, 0)) AS comisiones
+      FROM viajes
+      WHERE estado = 'finalizado'
+        AND fecha_fin >= NOW() - INTERVAL '1 day' * @dias
         ${filtroTipoMetodo}
       GROUP BY tipo_servicio
       ORDER BY tipo_servicio
@@ -192,10 +203,10 @@ export class AdminModel {
     }>(`
       SELECT metodo_pago,
              COUNT(*) AS viajes,
-             SUM(ISNULL(tarifa_final,0)) AS monto
-      FROM dbo.viajes
-      WHERE estado = N'finalizado'
-        AND fecha_fin >= DATEADD(day, -@dias, SYSDATETIMEOFFSET())
+             SUM(COALESCE(tarifa_final, 0)) AS monto
+      FROM viajes
+      WHERE estado = 'finalizado'
+        AND fecha_fin >= NOW() - INTERVAL '1 day' * @dias
         ${filtroTipoMetodo}
       GROUP BY metodo_pago
     `);
@@ -205,14 +216,14 @@ export class AdminModel {
       viajes: number;
       ingresos: number;
     }>(`
-      SELECT ISNULL(NULLIF(JSON_VALUE(detalle_tarifa, '$.zona_nombre'), N''), N'Sin zona') AS zona,
+      SELECT COALESCE(NULLIF(detalle_tarifa::jsonb->>'zona_nombre', ''), 'Sin zona') AS zona,
              COUNT(*) AS viajes,
-             SUM(ISNULL(tarifa_final,0)) AS ingresos
-      FROM dbo.viajes
-      WHERE estado = N'finalizado'
-        AND fecha_fin >= DATEADD(day, -@dias, SYSDATETIMEOFFSET())
+             SUM(COALESCE(tarifa_final, 0)) AS ingresos
+      FROM viajes
+      WHERE estado = 'finalizado'
+        AND fecha_fin >= NOW() - INTERVAL '1 day' * @dias
         ${filtroTipoMetodo}
-      GROUP BY ISNULL(NULLIF(JSON_VALUE(detalle_tarifa, '$.zona_nombre'), N''), N'Sin zona')
+      GROUP BY COALESCE(NULLIF(detalle_tarifa::jsonb->>'zona_nombre', ''), 'Sin zona')
       ORDER BY viajes DESC
     `);
 
@@ -221,19 +232,19 @@ export class AdminModel {
       viajes: number;
       ingresos: number;
     }>(`
-      SELECT ISNULL(JSON_VALUE(detalle_tarifa, '$.franja_hora'), N'valle') AS franja,
+      SELECT COALESCE(detalle_tarifa::jsonb->>'franja_hora', 'valle') AS franja,
              COUNT(*) AS viajes,
-             SUM(ISNULL(tarifa_final,0)) AS ingresos
-      FROM dbo.viajes
-      WHERE estado = N'finalizado'
-        AND fecha_fin >= DATEADD(day, -@dias, SYSDATETIMEOFFSET())
+             SUM(COALESCE(tarifa_final, 0)) AS ingresos
+      FROM viajes
+      WHERE estado = 'finalizado'
+        AND fecha_fin >= NOW() - INTERVAL '1 day' * @dias
         ${filtroTipoMetodo}
-      GROUP BY ISNULL(JSON_VALUE(detalle_tarifa, '$.franja_hora'), N'valle')
+      GROUP BY COALESCE(detalle_tarifa::jsonb->>'franja_hora', 'valle')
       ORDER BY viajes DESC
     `);
 
     const catalogoZonas = await pool.request().query<{ h3_index: string; nombre: string | null }>(`
-      SELECT h3_index, nombre FROM dbo.zonas_hexagonos WHERE activa = 1 ORDER BY nombre
+      SELECT h3_index, nombre FROM zonas_hexagonos WHERE activa = TRUE ORDER BY nombre
     `);
 
     let sujeto: {
@@ -246,7 +257,7 @@ export class AdminModel {
       const u = await pool
         .request()
         .input('id', sql.UniqueIdentifier, cadeteId)
-        .query<{ nombre: string }>(`SELECT nombre FROM dbo.usuarios WHERE id = @id`);
+        .query<{ nombre: string }>(`SELECT nombre FROM usuarios WHERE id = @id`);
       sujeto = {
         tipo: 'cadete',
         id: cadeteId,
@@ -256,7 +267,7 @@ export class AdminModel {
       const u = await pool
         .request()
         .input('id', sql.UniqueIdentifier, clienteId)
-        .query<{ nombre: string }>(`SELECT nombre FROM dbo.usuarios WHERE id = @id`);
+        .query<{ nombre: string }>(`SELECT nombre FROM usuarios WHERE id = @id`);
       sujeto = {
         tipo: 'cliente',
         id: clienteId,
@@ -350,11 +361,11 @@ export class AdminModel {
       .input('resumen', sql.NVarChar(sql.MAX), JSON.stringify(input.resumen ?? {}))
       .input('detalle', sql.NVarChar(sql.MAX), JSON.stringify(input.detalle ?? {}))
       .query<{ id: string; fecha_creacion: Date }>(`
-        INSERT INTO dbo.reportes_guardados (
+        INSERT INTO reportes_guardados (
           tipo, titulo, periodo_desde, periodo_hasta, generado_por, resumen_json, detalle_json
         )
-        OUTPUT INSERTED.id, INSERTED.fecha_creacion
-        VALUES (@tipo, @titulo, @desde, @hasta, @uid, @resumen, @detalle)
+        VALUES (@tipo, @titulo, @desde, @hasta, @uid, @resumen::jsonb, @detalle::jsonb)
+        RETURNING id, fecha_creacion
       `);
     const row = result.recordset[0];
     return {
@@ -384,12 +395,12 @@ export class AdminModel {
         fecha_creacion: Date;
         generado_nombre: string | null;
       }>(`
-        SELECT TOP (@lim)
-               r.id, r.tipo, r.titulo, r.periodo_desde, r.periodo_hasta,
+        SELECT r.id, r.tipo, r.titulo, r.periodo_desde, r.periodo_hasta,
                r.resumen_json, r.fecha_creacion, u.nombre AS generado_nombre
-        FROM dbo.reportes_guardados r
-        LEFT JOIN dbo.usuarios u ON u.id = r.generado_por
+        FROM reportes_guardados r
+        LEFT JOIN usuarios u ON u.id = r.generado_por
         ORDER BY r.fecha_creacion DESC
+        LIMIT @lim
       `);
     return result.recordset.map((r) => ({
       id: String(r.id),
@@ -401,7 +412,7 @@ export class AdminModel {
       periodo_hasta: r.periodo_hasta
         ? new Date(r.periodo_hasta).toISOString().slice(0, 10)
         : null,
-      resumen: JSON.parse(r.resumen_json) as Record<string, unknown>,
+      resumen: parseJsonField(r.resumen_json, {} as Record<string, unknown>),
       fecha_creacion: new Date(r.fecha_creacion).toISOString(),
       generado_nombre: r.generado_nombre,
     }));
@@ -424,7 +435,7 @@ export class AdminModel {
       }>(`
         SELECT id, tipo, titulo, periodo_desde, periodo_hasta,
                resumen_json, detalle_json, fecha_creacion
-        FROM dbo.reportes_guardados WHERE id = @id
+        FROM reportes_guardados WHERE id = @id
       `);
     const r = result.recordset[0];
     if (!r) throw new NotFoundError('Reporte no encontrado');
@@ -438,8 +449,8 @@ export class AdminModel {
       periodo_hasta: r.periodo_hasta
         ? new Date(r.periodo_hasta).toISOString().slice(0, 10)
         : null,
-      resumen: JSON.parse(r.resumen_json) as Record<string, unknown>,
-      detalle: JSON.parse(r.detalle_json) as Record<string, unknown>,
+      resumen: parseJsonField(r.resumen_json, {} as Record<string, unknown>),
+      detalle: parseJsonField(r.detalle_json, {} as Record<string, unknown>),
       fecha_creacion: new Date(r.fecha_creacion).toISOString(),
     };
   }
@@ -449,10 +460,10 @@ export class AdminModel {
     const result = await pool
       .request()
       .input('clave', sql.NVarChar(100), clave)
-      .query<{ valor: string }>(`SELECT valor FROM dbo.configuraciones WHERE clave = @clave`);
+      .query<{ valor: unknown }>(`SELECT valor FROM configuraciones WHERE clave = @clave`);
     const row = result.recordset[0];
     if (!row) throw new NotFoundError(`Config ${clave} no encontrada`);
-    return JSON.parse(row.valor) as Record<string, unknown>;
+    return requireJsonField<Record<string, unknown>>(row.valor);
   }
 
   async setTarifasBase(partial: {
@@ -474,9 +485,9 @@ export class AdminModel {
       .request()
       .input('valor', sql.NVarChar(sql.MAX), JSON.stringify(next))
       .query(`
-        UPDATE dbo.configuraciones
-        SET valor = @valor
-        WHERE clave = N'tarifas.base'
+        UPDATE configuraciones
+        SET valor = @valor::jsonb
+        WHERE clave = 'tarifas.base'
       `);
     return next;
   }
@@ -485,7 +496,7 @@ export class AdminModel {
     const pool = await getPool();
     const result = await pool.request().query(`
       SELECT id, viaje_id, usuario_reporta, tipo, nivel, descripcion, estado, asignado_a, fecha_creacion
-      FROM dbo.incidencias
+      FROM incidencias
       ORDER BY fecha_creacion DESC
     `);
     return result.recordset;
@@ -503,12 +514,12 @@ export class AdminModel {
       .input('asignado', sql.UniqueIdentifier, data.asignado_a ?? null)
       .input('resolucion', sql.NVarChar(2000), data.resolucion ?? null)
       .query(`
-        UPDATE dbo.incidencias
+        UPDATE incidencias
         SET estado = COALESCE(@estado, estado),
             asignado_a = COALESCE(@asignado, asignado_a),
             resolucion = COALESCE(@resolucion, resolucion),
             fecha_resolucion = CASE
-              WHEN @estado IN (N'resuelta', N'cerrada') THEN SYSDATETIMEOFFSET()
+              WHEN @estado IN ('resuelta', 'cerrada') THEN NOW()
               ELSE fecha_resolucion END
         WHERE id = @id
       `);
@@ -531,28 +542,139 @@ export class AdminModel {
       .input('nivel', sql.NVarChar(10), input.nivel)
       .input('desc', sql.NVarChar(2000), input.descripcion)
       .query<{ id: string }>(`
-        INSERT INTO dbo.incidencias (viaje_id, usuario_reporta, tipo, nivel, descripcion)
-        OUTPUT INSERTED.id
+        INSERT INTO incidencias (viaje_id, usuario_reporta, tipo, nivel, descripcion)
         VALUES (@viaje, @user, @tipo, @nivel, @desc)
+        RETURNING id
       `);
     return { id: result.recordset[0]?.id, ...input };
   }
 
+  private readonly PLANES_FALLBACK = {
+    cliente: [
+      { plan: 'gratuito', monto_mensual: 0, descuento_pct: 0 },
+      { plan: 'basico', monto_mensual: 3000, descuento_pct: 10 },
+      { plan: 'plus', monto_mensual: 8000, descuento_pct: 20 },
+      { plan: 'business', monto_mensual: 15000, descuento_pct: 30 },
+    ],
+    cadete: [
+      { plan: 'trial', monto_mensual: 0, comision_pct: 15, dias_trial: 14 },
+      { plan: 'silver', monto_mensual: 6000, comision_pct: 13 },
+      { plan: 'gold', monto_mensual: 10000, comision_pct: 10 },
+      { plan: 'premium', monto_mensual: 15000, comision_pct: 8 },
+    ],
+  };
+
+  /** Compat sync (fallback). Preferí getPlanes(). */
   planes() {
-    return {
-      cliente: [
-        { plan: 'gratuito', monto_mensual: 0, descuento_pct: 0 },
-        { plan: 'basico', monto_mensual: 3000, descuento_pct: 10 },
-        { plan: 'plus', monto_mensual: 8000, descuento_pct: 20 },
-        { plan: 'business', monto_mensual: 15000, descuento_pct: 30 },
-      ],
-      cadete: [
-        { plan: 'trial', monto_mensual: 0, comision_pct: 15, dias_trial: 14 },
-        { plan: 'silver', monto_mensual: 6000, comision_pct: 13 },
-        { plan: 'gold', monto_mensual: 10000, comision_pct: 10 },
-        { plan: 'premium', monto_mensual: 15000, comision_pct: 8 },
-      ],
-    };
+    return this.PLANES_FALLBACK;
+  }
+
+  async getTarifasBase() {
+    return this.getConfig('tarifas.base') as Promise<{
+      base_fija: number;
+      precio_km: number;
+      precio_minuto: number;
+      moneda?: string;
+      ciudad?: string;
+      pais?: string;
+    }>;
+  }
+
+  private mapPlanesCliente(raw: Record<string, unknown>) {
+    const order = ['gratuito', 'basico', 'plus', 'business'];
+    return order.map((plan) => {
+      const v = (raw[plan] ?? {}) as { monto_mensual?: number; descuento_pct?: number };
+      const fb = this.PLANES_FALLBACK.cliente.find((p) => p.plan === plan)!;
+      return {
+        plan,
+        monto_mensual: Number(v.monto_mensual ?? fb.monto_mensual),
+        descuento_pct: Number(v.descuento_pct ?? fb.descuento_pct),
+      };
+    });
+  }
+
+  private mapPlanesCadete(raw: Record<string, unknown>) {
+    const order = ['trial', 'silver', 'gold', 'premium'];
+    return order.map((plan) => {
+      const v = (raw[plan] ?? {}) as {
+        monto_mensual?: number;
+        comision_pct?: number;
+        dias_trial?: number;
+      };
+      const fb = this.PLANES_FALLBACK.cadete.find((p) => p.plan === plan)!;
+      return {
+        plan,
+        monto_mensual: Number(v.monto_mensual ?? fb.monto_mensual),
+        comision_pct: Number(v.comision_pct ?? fb.comision_pct),
+        ...(plan === 'trial'
+          ? { dias_trial: Number(v.dias_trial ?? fb.dias_trial ?? 14) }
+          : {}),
+      };
+    });
+  }
+
+  async getPlanes() {
+    try {
+      const [cli, cad] = await Promise.all([
+        this.getConfig('planes.cliente'),
+        this.getConfig('planes.cadete'),
+      ]);
+      return {
+        cliente: this.mapPlanesCliente(cli),
+        cadete: this.mapPlanesCadete(cad),
+      };
+    } catch {
+      return this.PLANES_FALLBACK;
+    }
+  }
+
+  async setPlanes(input: {
+    cliente?: Array<{ plan: string; monto_mensual: number; descuento_pct: number }>;
+    cadete?: Array<{
+      plan: string;
+      monto_mensual: number;
+      comision_pct: number;
+      dias_trial?: number;
+    }>;
+  }) {
+    const pool = await getPool();
+    if (input.cliente) {
+      const obj: Record<string, { monto_mensual: number; descuento_pct: number }> = {};
+      for (const p of input.cliente) {
+        obj[p.plan] = {
+          monto_mensual: p.monto_mensual,
+          descuento_pct: p.descuento_pct,
+        };
+      }
+      await pool
+        .request()
+        .input('valor', sql.NVarChar(sql.MAX), JSON.stringify(obj))
+        .query(`
+          UPDATE configuraciones SET valor = @valor::jsonb
+          WHERE clave = 'planes.cliente'
+        `);
+    }
+    if (input.cadete) {
+      const obj: Record<
+        string,
+        { monto_mensual: number; comision_pct: number; dias_trial?: number }
+      > = {};
+      for (const p of input.cadete) {
+        obj[p.plan] = {
+          monto_mensual: p.monto_mensual,
+          comision_pct: p.comision_pct,
+          ...(p.dias_trial != null ? { dias_trial: p.dias_trial } : {}),
+        };
+      }
+      await pool
+        .request()
+        .input('valor', sql.NVarChar(sql.MAX), JSON.stringify(obj))
+        .query(`
+          UPDATE configuraciones SET valor = @valor::jsonb
+          WHERE clave = 'planes.cadete'
+        `);
+    }
+    return this.getPlanes();
   }
 }
 

@@ -1,4 +1,4 @@
-import Redis from 'ioredis';
+import { Redis } from 'ioredis';
 import { env } from './env.js';
 
 /**
@@ -27,12 +27,11 @@ export async function connectRedis(): Promise<void> {
     maxRetriesPerRequest: 1,
     lazyConnect: true,
     enableOfflineQueue: false,
-    // No reintentar en loop si Redis no está
     retryStrategy: () => null,
     reconnectOnError: () => false,
   });
 
-  client.on('error', (err) => {
+  client.on('error', (err: Error) => {
     available = false;
     if (!warnedOffline) {
       warnedOffline = true;

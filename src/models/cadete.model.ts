@@ -9,6 +9,7 @@ import type {
 } from '../types/domain.js';
 import { ConflictError, NotFoundError, ValidationError } from '../utils/errors.js';
 import { rethrowSqlConflict } from '../utils/sql-conflicts.js';
+import { parseJsonField } from '../utils/json-field.js';
 import bcrypt from 'bcryptjs';
 import { cadeteActividadModel } from './cadete_actividad.model.js';
 
@@ -62,18 +63,8 @@ function mapCadete(row: CadeteRow): Cadete & {
     ubicacion_actual = { lat: Number(row.lat), lng: Number(row.lng) };
   }
 
-  let datos_moto: DatosMoto = {};
-  let fotos_documentos: FotosDocumentos = {};
-  try {
-    datos_moto = JSON.parse(row.datos_moto) as DatosMoto;
-  } catch {
-    /* empty */
-  }
-  try {
-    fotos_documentos = JSON.parse(row.fotos_documentos) as FotosDocumentos;
-  } catch {
-    /* empty */
-  }
+  const datos_moto = parseJsonField<DatosMoto>(row.datos_moto, {});
+  const fotos_documentos = parseJsonField<FotosDocumentos>(row.fotos_documentos, {});
 
   // Preferir columnas normalizadas; JSON como respaldo de extras
   if (row.patente) datos_moto.patente = row.patente;
@@ -123,15 +114,15 @@ function mapCadete(row: CadeteRow): Cadete & {
 const SELECT_CADETE = `
   SELECT c.usuario_id, c.dni, c.licencia, c.patente, c.marca_moto, c.fecha_nacimiento,
          c.estado_verificacion, c.disponibilidad,
-         c.ubicacion_actual.Lat AS lat, c.ubicacion_actual.Long AS lng,
+         c.ubicacion_lat AS lat, c.ubicacion_lng AS lng,
          c.ubicacion_actualizada_en, c.zona_actual, c.plan_suscripcion, c.estado_suscripcion,
          c.comision_actual, c.total_viajes, c.total_ganado, c.calificacion_promedio,
          c.datos_moto, c.fotos_documentos, c.direccion,
          c.calle, c.numero, c.piso_dpto, c.barrio, c.ciudad, c.provincia,
          c.cbu, c.alias_bancario, c.banco, c.titular_cuenta,
          u.numero_usuario, u.email, u.telefono, u.nombre, u.estado
-  FROM dbo.cadetes c
-  INNER JOIN dbo.usuarios u ON u.id = c.usuario_id
+  FROM cadetes c
+  INNER JOIN usuarios u ON u.id = c.usuario_id
 `;
 
 export class CadeteModel {
@@ -162,15 +153,15 @@ export class CadeteModel {
       .input('licencia', sql.NVarChar(50), input.licencia)
       .input('patente', sql.NVarChar(20), input.patente)
       .query<{ campo: string }>(`
-        SELECT N'email' AS campo FROM dbo.usuarios WHERE email = @email
+        SELECT 'email' AS campo FROM usuarios WHERE email = @email
         UNION ALL
-        SELECT N'telefono' FROM dbo.usuarios WHERE telefono = @telefono
+        SELECT 'telefono' FROM usuarios WHERE telefono = @telefono
         UNION ALL
-        SELECT N'dni' FROM dbo.cadetes WHERE dni = @dni
+        SELECT 'dni' FROM cadetes WHERE dni = @dni
         UNION ALL
-        SELECT N'licencia' FROM dbo.cadetes WHERE licencia = @licencia
+        SELECT 'licencia' FROM cadetes WHERE licencia = @licencia
         UNION ALL
-        SELECT N'patente' FROM dbo.cadetes WHERE patente = @patente
+        SELECT 'patente' FROM cadetes WHERE patente = @patente
       `);
 
     for (const row of checks.recordset) {
@@ -250,9 +241,9 @@ export class CadeteModel {
         .input('nombre', sql.NVarChar(150), input.nombre)
         .input('password_hash', sql.NVarChar(255), password_hash)
         .query<{ id: string }>(`
-          INSERT INTO dbo.usuarios (email, telefono, nombre, password_hash, rol, estado)
-          OUTPUT INSERTED.id
-          VALUES (@email, @telefono, @nombre, @password_hash, N'cadete', N'pendiente_verificacion')
+          INSERT INTO usuarios (email, telefono, nombre, password_hash, rol, estado)
+          VALUES (@email, @telefono, @nombre, @password_hash, 'cadete', 'pendiente_verificacion')
+          RETURNING id
         `);
       const id = ins.recordset[0]?.id;
       if (!id) throw new Error('No se creó usuario');
@@ -275,14 +266,14 @@ export class CadeteModel {
         .input('moto', sql.NVarChar(sql.MAX), JSON.stringify(datos_moto))
         .input('fotos', sql.NVarChar(sql.MAX), JSON.stringify(input.fotos_documentos))
         .query(`
-          INSERT INTO dbo.cadetes (
+          INSERT INTO cadetes (
             usuario_id, dni, licencia, patente, marca_moto, fecha_nacimiento,
             direccion, calle, numero, piso_dpto, barrio, ciudad, provincia, zona_actual,
             estado_verificacion, datos_moto, fotos_documentos
           ) VALUES (
             @id, @dni, @licencia, @patente, @marca, @fn,
             @dir, @calle, @numero, @piso, @barrio, @ciudad, @provincia, @zona,
-            N'pendiente', @moto, @fotos
+            'pendiente', @moto::jsonb, @fotos::jsonb
           )
         `);
 
@@ -302,7 +293,7 @@ export class CadeteModel {
       .request()
       .input('id', sql.UniqueIdentifier, usuarioId)
       .input('fotos', sql.NVarChar(sql.MAX), JSON.stringify(merged))
-      .query(`UPDATE dbo.cadetes SET fotos_documentos = @fotos WHERE usuario_id = @id`);
+      .query(`UPDATE cadetes SET fotos_documentos = @fotos::jsonb WHERE usuario_id = @id`);
     return this.getById(usuarioId);
   }
 
@@ -312,7 +303,7 @@ export class CadeteModel {
       .request()
       .input('id', sql.UniqueIdentifier, usuarioId)
       .input('dir', sql.NVarChar(300), direccion)
-      .query(`UPDATE dbo.cadetes SET direccion = @dir WHERE usuario_id = @id`);
+      .query(`UPDATE cadetes SET direccion = @dir WHERE usuario_id = @id`);
     return this.getById(usuarioId);
   }
 
@@ -322,7 +313,7 @@ export class CadeteModel {
       .request()
       .input('id', sql.UniqueIdentifier, usuarioId)
       .input('d', sql.NVarChar(20), disponibilidad)
-      .query(`UPDATE dbo.cadetes SET disponibilidad = @d WHERE usuario_id = @id`);
+      .query(`UPDATE cadetes SET disponibilidad = @d WHERE usuario_id = @id`);
     await cadeteActividadModel.registrarCambioDisponibilidad(usuarioId, disponibilidad);
     return this.getById(usuarioId);
   }
@@ -344,9 +335,10 @@ export class CadeteModel {
       .input('lng', sql.Float, lng)
       .input('zona', sql.NVarChar(64), zonaFinal)
       .query(`
-        UPDATE dbo.cadetes
-        SET ubicacion_actual = geography::Point(@lat, @lng, 4326),
-            ubicacion_actualizada_en = SYSDATETIMEOFFSET(),
+        UPDATE cadetes
+        SET ubicacion_lat = @lat,
+            ubicacion_lng = @lng,
+            ubicacion_actualizada_en = NOW(),
             zona_actual = COALESCE(@zona, zona_actual)
         WHERE usuario_id = @id
       `);
@@ -358,10 +350,11 @@ export class CadeteModel {
     const pool = await getPool();
     const result = await pool.request().query<CadeteRow>(`
       ${SELECT_CADETE}
-      WHERE c.disponibilidad = N'online'
-        AND c.estado_verificacion = N'aprobado'
-        AND u.estado = N'activo'
-        AND c.ubicacion_actual IS NOT NULL
+      WHERE c.disponibilidad = 'online'
+        AND c.estado_verificacion = 'aprobado'
+        AND u.estado = 'activo'
+        AND c.ubicacion_lat IS NOT NULL
+        AND c.ubicacion_lng IS NOT NULL
     `);
     return result.recordset.map(mapCadete);
   }
@@ -377,17 +370,17 @@ export class CadeteModel {
         SELECT COUNT(*) OVER() AS total,
                c.usuario_id, c.dni, c.licencia, c.patente, c.marca_moto, c.fecha_nacimiento,
                c.estado_verificacion, c.disponibilidad,
-               c.ubicacion_actual.Lat AS lat, c.ubicacion_actual.Long AS lng,
+               c.ubicacion_lat AS lat, c.ubicacion_lng AS lng,
                c.ubicacion_actualizada_en, c.zona_actual, c.plan_suscripcion, c.estado_suscripcion,
                c.comision_actual, c.total_viajes, c.total_ganado, c.calificacion_promedio,
                c.datos_moto, c.fotos_documentos, c.direccion,
                c.calle, c.numero, c.piso_dpto, c.barrio, c.ciudad, c.provincia,
                c.cbu, c.alias_bancario, c.banco, c.titular_cuenta,
                u.numero_usuario, u.email, u.telefono, u.nombre, u.estado
-        FROM dbo.cadetes c
-        INNER JOIN dbo.usuarios u ON u.id = c.usuario_id
+        FROM cadetes c
+        INNER JOIN usuarios u ON u.id = c.usuario_id
         ORDER BY u.numero_usuario DESC
-        OFFSET @offset ROWS FETCH NEXT @limit ROWS ONLY
+        OFFSET @offset LIMIT @limit
       `);
     return {
       items: result.recordset.map(mapCadete),
@@ -406,16 +399,158 @@ export class CadeteModel {
       .request()
       .input('id', sql.UniqueIdentifier, usuarioId)
       .input('e', sql.NVarChar(20), estado)
+      .query(`UPDATE cadetes SET estado_verificacion = @e WHERE usuario_id = @id`);
+    await pool
+      .request()
+      .input('id', sql.UniqueIdentifier, usuarioId)
+      .input('e', sql.NVarChar(20), estado)
       .query(`
-        UPDATE dbo.cadetes SET estado_verificacion = @e WHERE usuario_id = @id;
-        UPDATE dbo.usuarios
+        UPDATE usuarios
         SET estado = CASE
-          WHEN @e = N'aprobado' THEN N'activo'
-          WHEN @e = N'suspendido' THEN N'suspendido'
+          WHEN @e = 'aprobado' THEN 'activo'
+          WHEN @e = 'suspendido' THEN 'suspendido'
           ELSE estado END
-        WHERE id = @id;
+        WHERE id = @id
       `);
     return this.getById(usuarioId);
+  }
+
+  async actualizarAdmin(
+    usuarioId: string,
+    input: {
+      nombre?: string;
+      email?: string;
+      telefono?: string;
+      dni?: string;
+      licencia?: string;
+      patente?: string;
+      marca_moto?: string | null;
+      direccion?: string | null;
+      calle?: string | null;
+      numero?: string | null;
+      piso_dpto?: string | null;
+      barrio?: string | null;
+      ciudad?: string | null;
+      provincia?: string | null;
+      cbu?: string | null;
+      alias_bancario?: string | null;
+      banco?: string | null;
+      titular_cuenta?: string | null;
+      plan_suscripcion?: PlanCadete;
+      estado?: 'activo' | 'inactivo' | 'suspendido';
+    },
+  ) {
+    const actual = await this.getById(usuarioId);
+    const pool = await getPool();
+
+    if (
+      input.nombre !== undefined ||
+      input.email !== undefined ||
+      input.telefono !== undefined ||
+      input.estado !== undefined
+    ) {
+      await pool
+        .request()
+        .input('id', sql.UniqueIdentifier, usuarioId)
+        .input('nombre', sql.NVarChar(150), input.nombre ?? actual.nombre ?? '')
+        .input('email', sql.NVarChar(255), input.email ?? actual.email ?? '')
+        .input('telefono', sql.NVarChar(20), input.telefono ?? actual.telefono ?? '')
+        .input('estado', sql.NVarChar(30), input.estado ?? actual.estado ?? 'activo')
+        .query(`
+          UPDATE usuarios
+          SET nombre = @nombre, email = @email, telefono = @telefono, estado = @estado
+          WHERE id = @id
+        `);
+    }
+
+    await pool
+      .request()
+      .input('id', sql.UniqueIdentifier, usuarioId)
+      .input('dni', sql.NVarChar(20), input.dni ?? actual.dni)
+      .input('licencia', sql.NVarChar(50), input.licencia ?? actual.licencia)
+      .input('patente', sql.NVarChar(20), input.patente ?? actual.patente)
+      .input(
+        'marca',
+        sql.NVarChar(50),
+        input.marca_moto !== undefined ? input.marca_moto : actual.marca_moto,
+      )
+      .input(
+        'dir',
+        sql.NVarChar(300),
+        input.direccion !== undefined ? input.direccion : actual.direccion,
+      )
+      .input('calle', sql.NVarChar(150), input.calle !== undefined ? input.calle : actual.calle)
+      .input(
+        'numero',
+        sql.NVarChar(20),
+        input.numero !== undefined ? input.numero : actual.numero,
+      )
+      .input(
+        'piso',
+        sql.NVarChar(40),
+        input.piso_dpto !== undefined ? input.piso_dpto : actual.piso_dpto,
+      )
+      .input(
+        'barrio',
+        sql.NVarChar(100),
+        input.barrio !== undefined ? input.barrio : actual.barrio,
+      )
+      .input(
+        'ciudad',
+        sql.NVarChar(100),
+        input.ciudad !== undefined ? input.ciudad : actual.ciudad,
+      )
+      .input(
+        'provincia',
+        sql.NVarChar(100),
+        input.provincia !== undefined ? input.provincia : actual.provincia,
+      )
+      .input('cbu', sql.NVarChar(22), input.cbu !== undefined ? input.cbu : actual.cbu)
+      .input(
+        'alias',
+        sql.NVarChar(80),
+        input.alias_bancario !== undefined ? input.alias_bancario : actual.alias_bancario,
+      )
+      .input('banco', sql.NVarChar(80), input.banco !== undefined ? input.banco : actual.banco)
+      .input(
+        'titular',
+        sql.NVarChar(150),
+        input.titular_cuenta !== undefined ? input.titular_cuenta : actual.titular_cuenta,
+      )
+      .query(`
+        UPDATE cadetes
+        SET dni = @dni,
+            licencia = @licencia,
+            patente = @patente,
+            marca_moto = @marca,
+            direccion = @dir,
+            calle = @calle,
+            numero = @numero,
+            piso_dpto = @piso,
+            barrio = @barrio,
+            ciudad = @ciudad,
+            provincia = @provincia,
+            cbu = @cbu,
+            alias_bancario = @alias,
+            banco = @banco,
+            titular_cuenta = @titular,
+            fecha_actualizacion = NOW()
+        WHERE usuario_id = @id
+      `);
+
+    if (input.plan_suscripcion && input.plan_suscripcion !== actual.plan_suscripcion) {
+      await this.actualizarPlan(usuarioId, input.plan_suscripcion);
+    }
+
+    return this.getById(usuarioId);
+  }
+
+  async darDeBaja(usuarioId: string) {
+    return this.actualizarAdmin(usuarioId, { estado: 'inactivo' });
+  }
+
+  async reactivar(usuarioId: string) {
+    return this.actualizarAdmin(usuarioId, { estado: 'activo' });
   }
 
   async actualizarPlan(usuarioId: string, plan: PlanCadete) {
@@ -438,12 +573,12 @@ export class CadeteModel {
       .input('plan', sql.NVarChar(20), plan)
       .input('com', sql.Decimal(5, 2), comision[plan])
       .query(`
-        UPDATE dbo.cadetes
+        UPDATE cadetes
         SET plan_suscripcion = @plan,
             comision_actual = @com,
-            estado_suscripcion = CASE WHEN @plan = N'trial' THEN N'trial' ELSE N'activa' END,
-            fecha_inicio_suscripcion = SYSDATETIMEOFFSET(),
-            fecha_fin_suscripcion = DATEADD(month, 1, SYSDATETIMEOFFSET())
+            estado_suscripcion = CASE WHEN @plan = 'trial' THEN 'trial' ELSE 'activa' END,
+            fecha_inicio_suscripcion = NOW(),
+            fecha_fin_suscripcion = NOW() + INTERVAL '1 month'
         WHERE usuario_id = @id
       `);
 
@@ -454,12 +589,12 @@ export class CadeteModel {
       .input('monto', sql.Decimal(12, 2), monto[plan])
       .input('com', sql.Decimal(5, 2), comision[plan])
       .query(`
-        INSERT INTO dbo.suscripciones (usuario_id, tipo_usuario, plan, estado, fecha_inicio, fecha_fin, monto_mensual, beneficios)
+        INSERT INTO suscripciones (usuario_id, tipo_usuario, plan, estado, fecha_inicio, fecha_fin, monto_mensual, beneficios)
         VALUES (
-          @uid, N'cadete', @plan,
-          CASE WHEN @plan = N'trial' THEN N'trial' ELSE N'activa' END,
-          SYSDATETIMEOFFSET(), DATEADD(month, 1, SYSDATETIMEOFFSET()),
-          @monto, CONCAT(N'{"comision_pct":', @com, N'}')
+          @uid, 'cadete', @plan,
+          CASE WHEN @plan = 'trial' THEN 'trial' ELSE 'activa' END,
+          NOW(), NOW() + INTERVAL '1 month',
+          @monto, CONCAT('{"comision_pct":', @com, '}')
         )
       `);
 
@@ -473,12 +608,12 @@ export class CadeteModel {
       .request()
       .input('id', sql.UniqueIdentifier, usuarioId)
       .query<{ mes: string; total: number; viajes: number }>(`
-        SELECT FORMAT(fecha_fin, 'yyyy-MM') AS mes,
-               SUM(ISNULL(pago_cadete, 0)) AS total,
+        SELECT to_char(fecha_fin, 'YYYY-MM') AS mes,
+               SUM(COALESCE(pago_cadete, 0)) AS total,
                COUNT(*) AS viajes
-        FROM dbo.viajes
-        WHERE cadete_id = @id AND estado = N'finalizado'
-        GROUP BY FORMAT(fecha_fin, 'yyyy-MM')
+        FROM viajes
+        WHERE cadete_id = @id AND estado = 'finalizado'
+        GROUP BY to_char(fecha_fin, 'YYYY-MM')
         ORDER BY mes DESC
       `);
     return {
@@ -515,7 +650,7 @@ export class CadeteModel {
       .input('banco', sql.NVarChar(80), input.banco?.trim() || null)
       .input('titular', sql.NVarChar(150), input.titular_cuenta?.trim() || null)
       .query(`
-        UPDATE dbo.cadetes
+        UPDATE cadetes
         SET cbu = COALESCE(@cbu, cbu),
             alias_bancario = COALESCE(@alias, alias_bancario),
             banco = COALESCE(@banco, banco),
@@ -538,11 +673,11 @@ export class CadeteModel {
         neto_cadete: number;
       }>(`
         SELECT COUNT(*) AS viajes,
-               ISNULL(SUM(tarifa_final),0) AS tarifa_bruta,
-               ISNULL(SUM(comision_plataforma),0) AS comision_retenida,
-               ISNULL(SUM(pago_cadete),0) AS neto_cadete
-        FROM dbo.viajes
-        WHERE cadete_id = @id AND estado = N'finalizado'
+               COALESCE(SUM(tarifa_final), 0) AS tarifa_bruta,
+               COALESCE(SUM(comision_plataforma), 0) AS comision_retenida,
+               COALESCE(SUM(pago_cadete), 0) AS neto_cadete
+        FROM viajes
+        WHERE cadete_id = @id AND estado = 'finalizado'
       `);
     const liq = await pool
       .request()
@@ -554,11 +689,11 @@ export class CadeteModel {
         monto_transferido: number;
       }>(`
         SELECT
-          SUM(CASE WHEN estado = N'pendiente' THEN 1 ELSE 0 END) AS pendientes,
-          SUM(CASE WHEN estado = N'pendiente' THEN monto_a_transferir ELSE 0 END) AS monto_pendiente,
-          SUM(CASE WHEN estado = N'transferida' THEN 1 ELSE 0 END) AS transferidas,
-          SUM(CASE WHEN estado = N'transferida' THEN monto_a_transferir ELSE 0 END) AS monto_transferido
-        FROM dbo.liquidaciones
+          SUM(CASE WHEN estado = 'pendiente' THEN 1 ELSE 0 END) AS pendientes,
+          SUM(CASE WHEN estado = 'pendiente' THEN monto_a_transferir ELSE 0 END) AS monto_pendiente,
+          SUM(CASE WHEN estado = 'transferida' THEN 1 ELSE 0 END) AS transferidas,
+          SUM(CASE WHEN estado = 'transferida' THEN monto_a_transferir ELSE 0 END) AS monto_transferido
+        FROM liquidaciones
         WHERE cadete_id = @id
       `);
     const r = ret.recordset[0];

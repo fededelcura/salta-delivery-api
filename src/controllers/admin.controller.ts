@@ -7,6 +7,7 @@ import { viajeModel } from '../models/viaje.model.js';
 import { comisionModel, comprobanteModel } from '../models/facturacion.model.js';
 import { liquidacionModel } from '../models/liquidacion.model.js';
 import { cadeteActividadModel } from '../models/cadete_actividad.model.js';
+import { zonaModel } from '../models/zona.model.js';
 import {
   DOC_TIPOS,
   docJsonKey,
@@ -28,7 +29,7 @@ export class AdminController {
 
   cadetes = async (req: Request, res: Response): Promise<void> => {
     const page = Number(req.query.page ?? 1);
-    const pageSize = Number(req.query.pageSize ?? 20);
+    const pageSize = Number(req.query.pageSize ?? 200);
     const data = await cadeteModel.listarAdmin(page, pageSize);
     ok(res, data.items, 200, { total: data.total, page, pageSize });
   };
@@ -123,9 +124,153 @@ export class AdminController {
 
   clientes = async (req: Request, res: Response): Promise<void> => {
     const page = Number(req.query.page ?? 1);
-    const pageSize = Number(req.query.pageSize ?? 20);
+    const pageSize = Number(req.query.pageSize ?? 200);
     const data = await clienteModel.listar(page, pageSize);
     ok(res, data.items, 200, { total: data.total, page, pageSize });
+  };
+
+  actualizarCliente = async (req: Request, res: Response): Promise<void> => {
+    const id = req.params.id as string;
+    const body = req.body as {
+      nombre?: string;
+      email?: string;
+      telefono?: string;
+      dni?: string;
+      plan_suscripcion?: PlanCliente;
+      tipo_cuenta?: 'particular' | 'restaurante' | 'comercio';
+      tiempo_preparacion_min?: number;
+      horario_comercial?: { abre?: string; cierra?: string; dias?: number[] } | null;
+      direccion_parts?: {
+        calle: string;
+        numero: string;
+        piso_dpto?: string | null;
+        barrio: string;
+        ciudad?: string;
+        provincia?: string;
+      };
+      estado?: 'activo' | 'inactivo' | 'suspendido';
+    };
+
+    let zonaPatch: {
+      direccion?: string;
+      calle?: string;
+      numero?: string;
+      piso_dpto?: string | null;
+      barrio?: string;
+      ciudad?: string;
+      provincia?: string;
+      zona_h3?: string | null;
+      zona_nombre?: string | null;
+    } = {};
+
+    if (body.direccion_parts) {
+      const parts = normalizarDireccionInput(body.direccion_parts);
+      const zona = await resolverZonaPorBarrio(parts.barrio);
+      zonaPatch = {
+        direccion: `${parts.calle} ${parts.numero}${parts.piso_dpto ? `, ${parts.piso_dpto}` : ''}, ${parts.barrio}`,
+        calle: parts.calle,
+        numero: parts.numero,
+        piso_dpto: parts.piso_dpto,
+        barrio: parts.barrio,
+        ciudad: parts.ciudad,
+        provincia: parts.provincia,
+        zona_h3: zona?.h3_index ?? null,
+        zona_nombre: zona?.nombre ?? parts.barrio,
+      };
+    }
+
+    ok(
+      res,
+      await clienteModel.actualizarAdmin(id, {
+        nombre: body.nombre,
+        email: body.email,
+        telefono: body.telefono,
+        dni: body.dni,
+        plan_suscripcion: body.plan_suscripcion,
+        tipo_cuenta: body.tipo_cuenta,
+        tiempo_preparacion_min: body.tiempo_preparacion_min,
+        horario_comercial: body.horario_comercial,
+        estado: body.estado,
+        ...zonaPatch,
+      }),
+    );
+  };
+
+  bajaCliente = async (req: Request, res: Response): Promise<void> => {
+    ok(res, await clienteModel.darDeBaja(req.params.id as string));
+  };
+
+  reactivarCliente = async (req: Request, res: Response): Promise<void> => {
+    ok(res, await clienteModel.reactivar(req.params.id as string));
+  };
+
+  actualizarCadete = async (req: Request, res: Response): Promise<void> => {
+    const id = req.params.id as string;
+    const body = req.body as {
+      nombre?: string;
+      email?: string;
+      telefono?: string;
+      dni?: string;
+      licencia?: string;
+      patente?: string;
+      marca_moto?: string | null;
+      direccion_parts?: {
+        calle: string;
+        numero: string;
+        piso_dpto?: string | null;
+        barrio: string;
+        ciudad?: string;
+        provincia?: string;
+      };
+      cbu?: string | null;
+      alias_bancario?: string | null;
+      banco?: string | null;
+      titular_cuenta?: string | null;
+      plan_suscripcion?: PlanCadete;
+      estado?: 'activo' | 'inactivo' | 'suspendido';
+    };
+
+    let dirPatch: Record<string, string | null | undefined> = {};
+    if (body.direccion_parts) {
+      const parts = normalizarDireccionInput(body.direccion_parts);
+      dirPatch = {
+        direccion: `${parts.calle} ${parts.numero}${parts.piso_dpto ? `, ${parts.piso_dpto}` : ''}, ${parts.barrio}`,
+        calle: parts.calle,
+        numero: parts.numero,
+        piso_dpto: parts.piso_dpto,
+        barrio: parts.barrio,
+        ciudad: parts.ciudad,
+        provincia: parts.provincia,
+      };
+    }
+
+    ok(
+      res,
+      await cadeteModel.actualizarAdmin(id, {
+        nombre: body.nombre,
+        email: body.email,
+        telefono: body.telefono,
+        dni: body.dni,
+        licencia: body.licencia,
+        patente: body.patente,
+        marca_moto: body.marca_moto,
+        cbu: body.cbu,
+        alias_bancario: body.alias_bancario,
+        banco: body.banco,
+        titular_cuenta: body.titular_cuenta,
+        plan_suscripcion: body.plan_suscripcion,
+        estado: body.estado,
+        ...dirPatch,
+      }),
+    );
+  };
+
+  bajaCadete = async (req: Request, res: Response): Promise<void> => {
+    ok(res, await cadeteModel.darDeBaja(req.params.id as string));
+  };
+
+  reactivarCadete = async (req: Request, res: Response): Promise<void> => {
+    ok(res, await cadeteModel.reactivar(req.params.id as string));
   };
 
   crearCliente = async (req: Request, res: Response): Promise<void> => {
@@ -164,8 +309,8 @@ export class AdminController {
       .request()
       .input('id', sql.UniqueIdentifier, user.id)
       .query(`
-        UPDATE dbo.usuarios
-        SET estado = N'activo', telefono_verificado = 1
+        UPDATE usuarios
+        SET estado = 'activo', telefono_verificado = TRUE
         WHERE id = @id
       `);
 
@@ -276,8 +421,36 @@ export class AdminController {
     ok(res, await adminModel.getReporteGuardado(req.params.id as string));
   };
 
+  getTarifas = async (_req: Request, res: Response): Promise<void> => {
+    ok(res, await adminModel.getTarifasBase());
+  };
+
   configurarTarifas = async (req: Request, res: Response): Promise<void> => {
     ok(res, await adminModel.setTarifasBase(req.body));
+  };
+
+  getPlanes = async (_req: Request, res: Response): Promise<void> => {
+    ok(res, await adminModel.getPlanes());
+  };
+
+  setPlanes = async (req: Request, res: Response): Promise<void> => {
+    ok(res, await adminModel.setPlanes(req.body));
+  };
+
+  listarZonas = async (_req: Request, res: Response): Promise<void> => {
+    ok(res, await zonaModel.listar(true));
+  };
+
+  crearZona = async (req: Request, res: Response): Promise<void> => {
+    created(res, await zonaModel.crear(req.body));
+  };
+
+  actualizarZona = async (req: Request, res: Response): Promise<void> => {
+    ok(res, await zonaModel.actualizar(req.params.id as string, req.body));
+  };
+
+  bajaZona = async (req: Request, res: Response): Promise<void> => {
+    ok(res, await zonaModel.darDeBaja(req.params.id as string));
   };
 
   incidencias = async (_req: Request, res: Response): Promise<void> => {

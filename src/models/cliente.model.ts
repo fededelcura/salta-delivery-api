@@ -6,6 +6,7 @@ import type {
   PlanCliente,
 } from '../types/domain.js';
 import { NotFoundError } from '../utils/errors.js';
+import { parseJsonField } from '../utils/json-field.js';
 
 interface ClienteRow {
   usuario_id: string;
@@ -45,20 +46,8 @@ function mapCliente(row: ClienteRow): Cliente & {
   nombre: string;
   estado: string;
 } {
-  let dirs: DireccionFavorita[] = [];
-  try {
-    dirs = JSON.parse(row.direcciones_favoritas) as DireccionFavorita[];
-  } catch {
-    dirs = [];
-  }
-  let fotos: Cliente['fotos_documentos'] = {};
-  try {
-    if (row.fotos_documentos) {
-      fotos = JSON.parse(row.fotos_documentos) as Cliente['fotos_documentos'];
-    }
-  } catch {
-    fotos = {};
-  }
+  const dirs = parseJsonField<DireccionFavorita[]>(row.direcciones_favoritas, []);
+  const fotos = parseJsonField<Cliente['fotos_documentos']>(row.fotos_documentos, {});
   return {
     usuario_id: String(row.usuario_id),
     numero_usuario: Number(row.numero_usuario),
@@ -66,15 +55,9 @@ function mapCliente(row: ClienteRow): Cliente & {
     plan_suscripcion: row.plan_suscripcion,
     tipo_cuenta: (row.tipo_cuenta as Cliente['tipo_cuenta']) || 'particular',
     tiempo_preparacion_min: Number(row.tiempo_preparacion_min ?? 0),
-    horario_comercial: (() => {
-      try {
-        return row.horario_comercial
-          ? (JSON.parse(row.horario_comercial) as Cliente['horario_comercial'])
-          : null;
-      } catch {
-        return null;
-      }
-    })(),
+    horario_comercial: row.horario_comercial
+      ? parseJsonField<Cliente['horario_comercial']>(row.horario_comercial, null)
+      : null,
     estado_suscripcion: row.estado_suscripcion as Cliente['estado_suscripcion'],
     fecha_inicio_suscripcion: row.fecha_inicio_suscripcion
       ? new Date(row.fecha_inicio_suscripcion).toISOString()
@@ -112,8 +95,8 @@ export class ClienteModel {
       .input('id', sql.UniqueIdentifier, usuarioId)
       .query<ClienteRow>(`
         SELECT c.*, u.numero_usuario, u.email, u.telefono, u.nombre, u.estado
-        FROM dbo.clientes c
-        INNER JOIN dbo.usuarios u ON u.id = c.usuario_id
+        FROM clientes c
+        INNER JOIN usuarios u ON u.id = c.usuario_id
         WHERE c.usuario_id = @id
       `);
     const row = result.recordset[0];
@@ -131,10 +114,10 @@ export class ClienteModel {
       .query<ClienteRow & { total: number }>(`
         SELECT c.*, u.numero_usuario, u.email, u.telefono, u.nombre, u.estado,
                COUNT(*) OVER() AS total
-        FROM dbo.clientes c
-        INNER JOIN dbo.usuarios u ON u.id = c.usuario_id
+        FROM clientes c
+        INNER JOIN usuarios u ON u.id = c.usuario_id
         ORDER BY u.numero_usuario DESC
-        OFFSET @offset ROWS FETCH NEXT @limit ROWS ONLY
+        OFFSET @offset LIMIT @limit
       `);
     const total = result.recordset[0]?.total ?? 0;
     return {
@@ -163,10 +146,10 @@ export class ClienteModel {
       .input('pago', sql.NVarChar(30), metodo)
       .input('dirs', sql.NVarChar(sql.MAX), JSON.stringify(dirs))
       .query(`
-        UPDATE dbo.clientes
+        UPDATE clientes
         SET metodo_pago_preferido = @pago,
-            direcciones_favoritas = @dirs,
-            fecha_actualizacion = SYSDATETIMEOFFSET()
+            direcciones_favoritas = @dirs::jsonb,
+            fecha_actualizacion = NOW()
         WHERE usuario_id = @id
       `);
 
@@ -234,7 +217,7 @@ export class ClienteModel {
       .input('fotos', sql.NVarChar(sql.MAX), JSON.stringify(fotos))
       .input('dirs', sql.NVarChar(sql.MAX), JSON.stringify(dirs))
       .query(`
-        UPDATE dbo.clientes
+        UPDATE clientes
         SET direccion = @dir,
             calle = @calle,
             numero = @numero,
@@ -244,9 +227,9 @@ export class ClienteModel {
             provincia = @provincia,
             zona_h3 = @zona_h3,
             zona_nombre = @zona_nombre,
-            fotos_documentos = @fotos,
-            direcciones_favoritas = @dirs,
-            fecha_actualizacion = SYSDATETIMEOFFSET()
+            fotos_documentos = @fotos::jsonb,
+            direcciones_favoritas = @dirs::jsonb,
+            fecha_actualizacion = NOW()
         WHERE usuario_id = @id
       `);
     return this.getPerfil(usuarioId);
@@ -272,11 +255,11 @@ export class ClienteModel {
         input.horario_comercial ? JSON.stringify(input.horario_comercial) : null,
       )
       .query(`
-        UPDATE dbo.clientes
+        UPDATE clientes
         SET tipo_cuenta = @tipo,
             tiempo_preparacion_min = @prep,
-            horario_comercial = @horario,
-            fecha_actualizacion = SYSDATETIMEOFFSET()
+            horario_comercial = @horario::jsonb,
+            fecha_actualizacion = NOW()
         WHERE usuario_id = @id
       `);
     return this.getPerfil(usuarioId);
@@ -297,20 +280,20 @@ export class ClienteModel {
       }>(`
         SELECT
           COUNT(*) AS viajes_total,
-          SUM(CASE WHEN estado = N'finalizado' THEN 1 ELSE 0 END) AS viajes_finalizados,
-          SUM(CASE WHEN estado = N'cancelado' THEN 1 ELSE 0 END) AS viajes_cancelados,
-          ISNULL(SUM(CASE WHEN estado = N'finalizado' THEN tarifa_final ELSE 0 END),0) AS importe_pagado,
-          ISNULL(AVG(CASE WHEN estado = N'finalizado' THEN tarifa_final END),0) AS ticket_promedio
-        FROM dbo.viajes
+          SUM(CASE WHEN estado = 'finalizado' THEN 1 ELSE 0 END) AS viajes_finalizados,
+          SUM(CASE WHEN estado = 'cancelado' THEN 1 ELSE 0 END) AS viajes_cancelados,
+          COALESCE(SUM(CASE WHEN estado = 'finalizado' THEN tarifa_final ELSE 0 END), 0) AS importe_pagado,
+          COALESCE(AVG(CASE WHEN estado = 'finalizado' THEN tarifa_final END), 0) AS ticket_promedio
+        FROM viajes
         WHERE cliente_id = @id
       `);
     const porMetodo = await pool
       .request()
       .input('id', sql.UniqueIdentifier, usuarioId)
       .query<{ metodo_pago: string; viajes: number; monto: number }>(`
-        SELECT metodo_pago, COUNT(*) AS viajes, ISNULL(SUM(tarifa_final),0) AS monto
-        FROM dbo.viajes
-        WHERE cliente_id = @id AND estado = N'finalizado'
+        SELECT metodo_pago, COUNT(*) AS viajes, COALESCE(SUM(tarifa_final), 0) AS monto
+        FROM viajes
+        WHERE cliente_id = @id AND estado = 'finalizado'
         GROUP BY metodo_pago
       `);
     const recientes = await pool
@@ -325,10 +308,11 @@ export class ClienteModel {
         tipo_servicio: string;
         destino_direccion: string;
       }>(`
-        SELECT TOP 10 id, fecha_solicitud, estado, tarifa_final, metodo_pago, tipo_servicio, destino_direccion
-        FROM dbo.viajes
+        SELECT id, fecha_solicitud, estado, tarifa_final, metodo_pago, tipo_servicio, destino_direccion
+        FROM viajes
         WHERE cliente_id = @id
         ORDER BY fecha_solicitud DESC
+        LIMIT 10
       `);
     const s = stats.recordset[0];
     return {
@@ -367,6 +351,148 @@ export class ClienteModel {
     return this.actualizarPreferencias(usuarioId, { direcciones_favoritas: next });
   }
 
+  async actualizarAdmin(
+    usuarioId: string,
+    input: {
+      nombre?: string;
+      email?: string;
+      telefono?: string;
+      dni?: string;
+      plan_suscripcion?: PlanCliente;
+      tipo_cuenta?: 'particular' | 'restaurante' | 'comercio';
+      tiempo_preparacion_min?: number;
+      horario_comercial?: { abre?: string; cierra?: string; dias?: number[] } | null;
+      direccion?: string | null;
+      calle?: string | null;
+      numero?: string | null;
+      piso_dpto?: string | null;
+      barrio?: string | null;
+      ciudad?: string | null;
+      provincia?: string | null;
+      zona_h3?: string | null;
+      zona_nombre?: string | null;
+      estado?: 'activo' | 'inactivo' | 'suspendido';
+    },
+  ) {
+    const actual = await this.getPerfil(usuarioId);
+    const pool = await getPool();
+
+    if (
+      input.nombre !== undefined ||
+      input.email !== undefined ||
+      input.telefono !== undefined ||
+      input.estado !== undefined
+    ) {
+      await pool
+        .request()
+        .input('id', sql.UniqueIdentifier, usuarioId)
+        .input('nombre', sql.NVarChar(150), input.nombre ?? actual.nombre)
+        .input('email', sql.NVarChar(255), input.email ?? actual.email)
+        .input('telefono', sql.NVarChar(20), input.telefono ?? actual.telefono)
+        .input('estado', sql.NVarChar(30), input.estado ?? actual.estado)
+        .query(`
+          UPDATE usuarios
+          SET nombre = @nombre, email = @email, telefono = @telefono, estado = @estado
+          WHERE id = @id
+        `);
+    }
+
+    await pool
+      .request()
+      .input('id', sql.UniqueIdentifier, usuarioId)
+      .input('dni', sql.NVarChar(20), input.dni ?? actual.dni)
+      .input('tipo', sql.NVarChar(20), input.tipo_cuenta ?? actual.tipo_cuenta)
+      .input(
+        'prep',
+        sql.Int,
+        input.tiempo_preparacion_min ?? actual.tiempo_preparacion_min ?? 0,
+      )
+      .input(
+        'horario',
+        sql.NVarChar(sql.MAX),
+        input.horario_comercial !== undefined
+          ? input.horario_comercial
+            ? JSON.stringify(input.horario_comercial)
+            : null
+          : actual.horario_comercial
+            ? JSON.stringify(actual.horario_comercial)
+            : null,
+      )
+      .input(
+        'dir',
+        sql.NVarChar(300),
+        input.direccion !== undefined ? input.direccion : actual.direccion,
+      )
+      .input('calle', sql.NVarChar(150), input.calle !== undefined ? input.calle : actual.calle)
+      .input(
+        'numero',
+        sql.NVarChar(20),
+        input.numero !== undefined ? input.numero : actual.numero,
+      )
+      .input(
+        'piso',
+        sql.NVarChar(40),
+        input.piso_dpto !== undefined ? input.piso_dpto : actual.piso_dpto,
+      )
+      .input(
+        'barrio',
+        sql.NVarChar(100),
+        input.barrio !== undefined ? input.barrio : actual.barrio,
+      )
+      .input(
+        'ciudad',
+        sql.NVarChar(100),
+        input.ciudad !== undefined ? input.ciudad : actual.ciudad,
+      )
+      .input(
+        'provincia',
+        sql.NVarChar(100),
+        input.provincia !== undefined ? input.provincia : actual.provincia,
+      )
+      .input(
+        'zona_h3',
+        sql.NVarChar(64),
+        input.zona_h3 !== undefined ? input.zona_h3 : actual.zona_h3,
+      )
+      .input(
+        'zona_nombre',
+        sql.NVarChar(100),
+        input.zona_nombre !== undefined ? input.zona_nombre : actual.zona_nombre,
+      )
+      .query(`
+        UPDATE clientes
+        SET dni = @dni,
+            tipo_cuenta = @tipo,
+            tiempo_preparacion_min = @prep,
+            horario_comercial = @horario::jsonb,
+            direccion = @dir,
+            calle = @calle,
+            numero = @numero,
+            piso_dpto = @piso,
+            barrio = @barrio,
+            ciudad = @ciudad,
+            provincia = @provincia,
+            zona_h3 = @zona_h3,
+            zona_nombre = @zona_nombre,
+            fecha_actualizacion = NOW()
+        WHERE usuario_id = @id
+      `);
+
+    if (input.plan_suscripcion && input.plan_suscripcion !== actual.plan_suscripcion) {
+      await this.actualizarPlan(usuarioId, input.plan_suscripcion);
+    }
+
+    return this.getPerfil(usuarioId);
+  }
+
+  async darDeBaja(usuarioId: string) {
+    return this.actualizarAdmin(usuarioId, { estado: 'inactivo' });
+  }
+
+  async reactivar(usuarioId: string) {
+    return this.actualizarAdmin(usuarioId, { estado: 'activo' });
+  }
+
   async actualizarPlan(usuarioId: string, plan: PlanCliente) {
     const montos: Record<PlanCliente, number> = {
       gratuito: 0,
@@ -380,11 +506,11 @@ export class ClienteModel {
       .input('id', sql.UniqueIdentifier, usuarioId)
       .input('plan', sql.NVarChar(20), plan)
       .query(`
-        UPDATE dbo.clientes
+        UPDATE clientes
         SET plan_suscripcion = @plan,
-            estado_suscripcion = N'activa',
-            fecha_inicio_suscripcion = SYSDATETIMEOFFSET(),
-            fecha_fin_suscripcion = DATEADD(month, 1, SYSDATETIMEOFFSET())
+            estado_suscripcion = 'activa',
+            fecha_inicio_suscripcion = NOW(),
+            fecha_fin_suscripcion = NOW() + INTERVAL '1 month'
         WHERE usuario_id = @id
       `);
 
@@ -394,16 +520,16 @@ export class ClienteModel {
       .input('plan', sql.NVarChar(20), plan)
       .input('monto', sql.Decimal(12, 2), montos[plan])
       .query(`
-        INSERT INTO dbo.suscripciones (usuario_id, tipo_usuario, plan, estado, fecha_inicio, fecha_fin, monto_mensual, beneficios)
+        INSERT INTO suscripciones (usuario_id, tipo_usuario, plan, estado, fecha_inicio, fecha_fin, monto_mensual, beneficios)
         VALUES (
-          @uid, N'cliente', @plan, N'activa',
-          SYSDATETIMEOFFSET(), DATEADD(month, 1, SYSDATETIMEOFFSET()),
+          @uid, 'cliente', @plan, 'activa',
+          NOW(), NOW() + INTERVAL '1 month',
           @monto,
           (SELECT CASE @plan
-            WHEN N'basico' THEN N'{"descuento_pct":10}'
-            WHEN N'plus' THEN N'{"descuento_pct":20}'
-            WHEN N'business' THEN N'{"descuento_pct":30}'
-            ELSE N'{"descuento_pct":0}' END)
+            WHEN 'basico' THEN '{"descuento_pct":10}'
+            WHEN 'plus' THEN '{"descuento_pct":20}'
+            WHEN 'business' THEN '{"descuento_pct":30}'
+            ELSE '{"descuento_pct":0}' END)
         )
       `);
 
