@@ -6,7 +6,7 @@ import { ok, created } from '../utils/response.js';
 import { UnauthorizedError } from '../utils/errors.js';
 import { signToken } from '../middleware/auth.middleware.js';
 import type { PlanCadete } from '../types/domain.js';
-import { emitViajeEstado } from '../sockets/index.js';
+import { emitViajeEstado, emitCadeteUbicacion } from '../sockets/index.js';
 import { facturacionService } from '../services/facturacion.service.js';
 import { comprobanteModel } from '../models/facturacion.model.js';
 
@@ -57,15 +57,19 @@ export class CadeteController {
   };
 
   actualizarUbicacion = async (req: Request, res: Response): Promise<void> => {
-    ok(
-      res,
-      await cadeteModel.actualizarUbicacion(
-        uid(req),
-        req.body.lat,
-        req.body.lng,
-        req.body.zona_h3,
-      ),
+    const cadete = await cadeteModel.actualizarUbicacion(
+      uid(req),
+      req.body.lat,
+      req.body.lng,
+      req.body.zona_h3,
     );
+    emitCadeteUbicacion({
+      cadete_id: uid(req),
+      lat: req.body.lat,
+      lng: req.body.lng,
+      disponibilidad: cadete.disponibilidad,
+    });
+    ok(res, cadete);
   };
 
   estadoViaje = async (req: Request, res: Response): Promise<void> => {

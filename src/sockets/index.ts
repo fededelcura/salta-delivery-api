@@ -26,6 +26,22 @@ export function emitViajeEstado(viajeId: string, estado: string, by?: string): v
   ioRef.to('admin').emit('viaje:estado', payload);
 }
 
+/** Flota en vivo: última GPS del cadete hacia panel admin (y viaje si aplica) */
+export function emitCadeteUbicacion(payload: {
+  cadete_id: string;
+  lat: number;
+  lng: number;
+  viaje_id?: string;
+  disponibilidad?: string;
+}): void {
+  if (!ioRef) return;
+  const body = { ...payload, ts: new Date().toISOString() };
+  if (payload.viaje_id) {
+    ioRef.to(`viaje:${payload.viaje_id}`).emit('cadete:ubicacion', body);
+  }
+  ioRef.to('admin').emit('cadete:ubicacion', body);
+}
+
 export function setupSockets(httpServer: HttpServer): Server {
   const io = new Server(httpServer, {
     cors: {
@@ -68,18 +84,14 @@ export function setupSockets(httpServer: HttpServer): Server {
 
     socket.on(
       'cadete:ubicacion',
-      (payload: { viaje_id?: string; lat: number; lng: number }) => {
-        if (payload?.viaje_id) {
-          io.to(`viaje:${payload.viaje_id}`).emit('cadete:ubicacion', {
-            cadete_id: user.sub,
-            ...payload,
-            ts: new Date().toISOString(),
-          });
-        }
-        io.to('admin').emit('cadete:ubicacion', {
+      (payload: { viaje_id?: string; lat: number; lng: number; disponibilidad?: string }) => {
+        if (typeof payload?.lat !== 'number' || typeof payload?.lng !== 'number') return;
+        emitCadeteUbicacion({
           cadete_id: user.sub,
-          ...payload,
-          ts: new Date().toISOString(),
+          lat: payload.lat,
+          lng: payload.lng,
+          viaje_id: payload.viaje_id,
+          disponibilidad: payload.disponibilidad,
         });
       },
     );
