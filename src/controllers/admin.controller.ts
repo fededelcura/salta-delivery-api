@@ -310,7 +310,7 @@ export class AdminController {
       .input('id', sql.UniqueIdentifier, user.id)
       .query(`
         UPDATE usuarios
-        SET estado = 'activo', telefono_verificado = TRUE
+        SET estado = 'activo', telefono_verificado = TRUE, email_verificado = TRUE
         WHERE id = @id
       `);
 

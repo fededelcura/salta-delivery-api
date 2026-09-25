@@ -2,9 +2,9 @@ import type { Request, Response } from 'express';
 import { cadeteModel } from '../models/cadete.model.js';
 import { viajeModel } from '../models/viaje.model.js';
 import { adminModel } from '../models/admin.model.js';
+import { authModel } from '../models/auth.model.js';
 import { ok, created } from '../utils/response.js';
 import { UnauthorizedError } from '../utils/errors.js';
-import { signToken } from '../middleware/auth.middleware.js';
 import type { PlanCadete } from '../types/domain.js';
 import { emitViajeEstado, emitCadeteUbicacion } from '../sockets/index.js';
 import { facturacionService } from '../services/facturacion.service.js';
@@ -27,14 +27,14 @@ export class CadeteController {
       patente: body.patente || body.datos_moto?.patente || '',
       marca_moto: body.marca_moto || body.datos_moto?.marca,
     });
-    const token = signToken({
-      sub: cadete.usuario_id,
-      email: cadete.email ?? '',
-      rol: 'cadete',
-    });
+    await authModel.issueEmailVerification(
+      cadete.usuario_id,
+      cadete.email ?? req.body.email,
+    );
     created(res, {
+      requiresEmailVerification: true,
+      email: cadete.email ?? req.body.email,
       cadete,
-      tokens: { accessToken: token, expiresIn: '7d', tokenType: 'Bearer' },
     });
   };
 

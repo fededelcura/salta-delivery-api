@@ -23,6 +23,8 @@ const envSchema = z.object({
   CORS_ORIGIN: z.string().default('*'),
   MERCADOPAGO_ACCESS_TOKEN: z.string().optional().default(''),
   MERCADOPAGO_WEBHOOK_SECRET: z.string().optional().default(''),
+  RESEND_API_KEY: z.string().optional().default(''),
+  MAIL_FROM: z.string().optional().default('Salta Delivery <onboarding@resend.dev>'),
 });
 
 const parsed = envSchema.safeParse(process.env);

@@ -130,6 +130,7 @@ export interface Usuario {
   rol: RolUsuario;
   estado: EstadoUsuario;
   telefono_verificado: boolean;
+  email_verificado: boolean;
   fecha_registro: string;
 }
 

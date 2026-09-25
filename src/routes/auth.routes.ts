@@ -4,6 +4,8 @@ import { asyncHandler, validate } from '../middleware/error.middleware.js';
 import {
   loginSchema,
   registerSchema,
+  resendVerificationSchema,
+  verifyEmailSchema,
   verifyPhoneSchema,
 } from '../middleware/validators.js';
 
@@ -21,6 +23,20 @@ router.post(
   '/login',
   validate({ body: loginSchema }),
   asyncHandler(authController.login),
+);
+
+/** POST /api/auth/verify-email */
+router.post(
+  '/verify-email',
+  validate({ body: verifyEmailSchema }),
+  asyncHandler(authController.verifyEmail),
+);
+
+/** POST /api/auth/resend-verification */
+router.post(
+  '/resend-verification',
+  validate({ body: resendVerificationSchema }),
+  asyncHandler(authController.resendVerification),
 );
 
 /** POST /api/auth/verify-phone — código de prueba: 123456 */

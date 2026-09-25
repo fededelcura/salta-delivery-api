@@ -23,8 +23,8 @@ export class AppError extends Error {
 }
 
 export class UnauthorizedError extends AppError {
-  constructor(message = 'No autorizado') {
-    super(message, 401, 'UNAUTHORIZED');
+  constructor(message = 'No autorizado', code = 'UNAUTHORIZED', details?: unknown) {
+    super(message, 401, code, details);
     this.name = 'UnauthorizedError';
   }
 }

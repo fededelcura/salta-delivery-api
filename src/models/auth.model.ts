@@ -12,6 +12,14 @@ import {
   ValidationError,
 } from '../utils/errors.js';
 import { rethrowSqlConflict } from '../utils/sql-conflicts.js';
+import {
+  generateOtpCode,
+  sendVerificationEmail,
+} from '../services/email.service.js';
+
+const OTP_TTL_MS = 10 * 60 * 1000;
+const OTP_MAX_ATTEMPTS = 5;
+const RESEND_COOLDOWN_MS = 60 * 1000;
 
 interface UsuarioRow {
   id: string;
@@ -23,6 +31,7 @@ interface UsuarioRow {
   rol: RolUsuario;
   estado: string;
   telefono_verificado: boolean;
+  email_verificado: boolean;
   fecha_registro: Date;
 }
 
@@ -37,13 +46,14 @@ function mapUsuario(row: UsuarioRow): Usuario & { password_hash: string } {
     rol: row.rol,
     estado: row.estado as Usuario['estado'],
     telefono_verificado: Boolean(row.telefono_verificado),
+    email_verificado: Boolean(row.email_verificado),
     fecha_registro: new Date(row.fecha_registro).toISOString(),
   };
 }
 
 const USER_COLS = `
   id, numero_usuario, email, telefono, nombre, password_hash, rol, estado,
-  telefono_verificado, fecha_registro
+  telefono_verificado, COALESCE(email_verificado, FALSE) AS email_verificado, fecha_registro
 `;
 
 export class AuthModel {
@@ -84,6 +94,31 @@ export class AuthModel {
       `);
     const row = result.recordset[0];
     return row ? mapUsuario(row) : null;
+  }
+
+  /** Genera OTP, guarda hash e intenta enviar email */
+  async issueEmailVerification(usuarioId: string, email: string): Promise<void> {
+    const pool = await getPool();
+    const code = generateOtpCode();
+    const codigo_hash = await bcrypt.hash(code, 10);
+    const expires_at = new Date(Date.now() + OTP_TTL_MS);
+
+    await pool
+      .request()
+      .input('usuario_id', sql.UniqueIdentifier, usuarioId)
+      .query(`DELETE FROM email_verification_codes WHERE usuario_id = @usuario_id`);
+
+    await pool
+      .request()
+      .input('usuario_id', sql.UniqueIdentifier, usuarioId)
+      .input('codigo_hash', sql.NVarChar(255), codigo_hash)
+      .input('expires_at', sql.DateTimeOffset, expires_at)
+      .query(`
+        INSERT INTO email_verification_codes (usuario_id, codigo_hash, expires_at)
+        VALUES (@usuario_id, @codigo_hash, @expires_at)
+      `);
+
+    await sendVerificationEmail(email, code);
   }
 
   async register(input: {
@@ -128,8 +163,8 @@ export class AuthModel {
         .input('password_hash', sql.NVarChar(255), password_hash)
         .input('rol', sql.NVarChar(20), input.rol)
         .query<{ id: string; numero_usuario: number }>(`
-          INSERT INTO usuarios (email, telefono, nombre, password_hash, rol, estado)
-          VALUES (@email, @telefono, @nombre, @password_hash, @rol, 'pendiente_verificacion')
+          INSERT INTO usuarios (email, telefono, nombre, password_hash, rol, estado, email_verificado)
+          VALUES (@email, @telefono, @nombre, @password_hash, @rol, 'pendiente_verificacion', FALSE)
           RETURNING id, numero_usuario
         `);
 
@@ -158,9 +193,12 @@ export class AuthModel {
       }
 
       await tx.commit();
-      const user = await this.findById(userId);
-      if (!user) throw new NotFoundError('Usuario creado no encontrado');
-      return user;
+      await this.issueEmailVerification(userId, input.email);
+      return {
+        id: userId,
+        email: input.email,
+        requiresEmailVerification: true as const,
+      };
     } catch (e) {
       await tx.rollback();
       rethrowSqlConflict(e);
@@ -180,8 +218,122 @@ export class AuthModel {
     if (user.estado === 'inactivo') {
       throw new UnauthorizedError('Usuario dado de baja');
     }
+    if (user.estado === 'pendiente_verificacion' || !user.email_verificado) {
+      throw new UnauthorizedError(
+        'Debés verificar tu email antes de ingresar',
+        'EMAIL_NOT_VERIFIED',
+        { email: user.email },
+      );
+    }
 
     return user;
+  }
+
+  async verifyEmail(email: string, codigo: string) {
+    const user = await this.findByEmail(email);
+    if (!user) throw new NotFoundError('Usuario no encontrado');
+
+    if (user.email_verificado && user.estado === 'activo') {
+      return user;
+    }
+
+    const pool = await getPool();
+    const codes = await pool
+      .request()
+      .input('usuario_id', sql.UniqueIdentifier, user.id)
+      .query<{
+        id: string;
+        codigo_hash: string;
+        expires_at: Date;
+        attempts: number;
+      }>(`
+        SELECT id, codigo_hash, expires_at, attempts
+        FROM email_verification_codes
+        WHERE usuario_id = @usuario_id
+        ORDER BY created_at DESC
+        LIMIT 1
+      `);
+
+    const row = codes.recordset[0];
+    if (!row) {
+      throw new UnauthorizedError('No hay un código pendiente. Pedí uno nuevo.');
+    }
+    if (new Date(row.expires_at).getTime() < Date.now()) {
+      throw new UnauthorizedError('El código expiró. Pedí uno nuevo.');
+    }
+    if (row.attempts >= OTP_MAX_ATTEMPTS) {
+      throw new UnauthorizedError('Demasiados intentos. Pedí un código nuevo.');
+    }
+
+    const match = await bcrypt.compare(codigo, row.codigo_hash);
+    if (!match) {
+      await pool
+        .request()
+        .input('id', sql.UniqueIdentifier, row.id)
+        .query(`
+          UPDATE email_verification_codes
+          SET attempts = attempts + 1
+          WHERE id = @id
+        `);
+      throw new UnauthorizedError('Código inválido');
+    }
+
+    await pool
+      .request()
+      .input('id', sql.UniqueIdentifier, user.id)
+      .query(`
+        UPDATE usuarios
+        SET email_verificado = TRUE,
+            estado = CASE
+              WHEN estado = 'pendiente_verificacion' THEN 'activo'
+              ELSE estado
+            END
+        WHERE id = @id
+      `);
+
+    await pool
+      .request()
+      .input('usuario_id', sql.UniqueIdentifier, user.id)
+      .query(`DELETE FROM email_verification_codes WHERE usuario_id = @usuario_id`);
+
+    const updated = await this.findById(user.id);
+    if (!updated) throw new NotFoundError('Usuario no encontrado');
+    return updated;
+  }
+
+  async resendVerification(email: string) {
+    const user = await this.findByEmail(email);
+    if (!user) {
+      // No revelar si el email existe
+      return { email, sent: true };
+    }
+    if (user.email_verificado && user.estado === 'activo') {
+      throw new ValidationError('Este email ya está verificado');
+    }
+
+    const pool = await getPool();
+    const latest = await pool
+      .request()
+      .input('usuario_id', sql.UniqueIdentifier, user.id)
+      .query<{ created_at: Date }>(`
+        SELECT created_at
+        FROM email_verification_codes
+        WHERE usuario_id = @usuario_id
+        ORDER BY created_at DESC
+        LIMIT 1
+      `);
+
+    const last = latest.recordset[0];
+    if (last) {
+      const elapsed = Date.now() - new Date(last.created_at).getTime();
+      if (elapsed < RESEND_COOLDOWN_MS) {
+        const wait = Math.ceil((RESEND_COOLDOWN_MS - elapsed) / 1000);
+        throw new ValidationError(`Esperá ${wait}s antes de pedir otro código`);
+      }
+    }
+
+    await this.issueEmailVerification(user.id, user.email);
+    return { email: user.email, sent: true };
   }
 
   async setEstado(id: string, estado: 'activo' | 'inactivo' | 'suspendido') {

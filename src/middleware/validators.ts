@@ -43,6 +43,15 @@ export const verifyPhoneSchema = z.object({
   codigo: z.string().length(6),
 });
 
+export const verifyEmailSchema = z.object({
+  email: z.string().email(),
+  codigo: z.string().length(6),
+});
+
+export const resendVerificationSchema = z.object({
+  email: z.string().email(),
+});
+
 export const solicitarViajeSchema = z.object({
   tipo_servicio: z.enum(['delivery', 'mensajeria', 'envio_paquete']).default('delivery'),
   origen_direccion: z.string().min(3).max(500),

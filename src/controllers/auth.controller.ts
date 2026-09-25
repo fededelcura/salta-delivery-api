@@ -41,13 +41,22 @@ function toSession(user: {
 
 export class AuthController {
   register = async (req: Request, res: Response): Promise<void> => {
-    const user = await authModel.register(req.body);
-    created(res, toSession(user));
+    const result = await authModel.register(req.body);
+    created(res, result);
   };
 
   login = async (req: Request, res: Response): Promise<void> => {
     const user = await authModel.login(req.body.email, req.body.password);
     ok(res, toSession(user));
+  };
+
+  verifyEmail = async (req: Request, res: Response): Promise<void> => {
+    const user = await authModel.verifyEmail(req.body.email, req.body.codigo);
+    ok(res, toSession(user));
+  };
+
+  resendVerification = async (req: Request, res: Response): Promise<void> => {
+    ok(res, await authModel.resendVerification(req.body.email));
   };
 
   verifyPhone = async (req: Request, res: Response): Promise<void> => {
