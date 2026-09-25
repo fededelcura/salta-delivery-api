@@ -368,6 +368,26 @@ export class AdminController {
     });
   };
 
+  despacharCercano = async (req: Request, res: Response): Promise<void> => {
+    const id = req.params.id as string;
+    const result = await viajeModel.despacharCercano(id);
+    ok(res, {
+      viaje_id: id,
+      candidatos: result.ranking_total ?? 0,
+      top: result.ranking
+        ? {
+            cadete_id: result.ranking.cadete_id,
+            score: result.ranking.score,
+            distancia_km: result.ranking.distancia_km,
+          }
+        : null,
+      mensaje:
+        (result.ranking_total ?? 0) > 0
+          ? 'Oferta reenviada a cadetes cercanos. Ellos deben aceptar el viaje.'
+          : 'No hay cadetes online cercanos. Revisá disponibilidad.',
+    });
+  };
+
   reportes = async (req: Request, res: Response): Promise<void> => {
     const dias = Number(req.query.dias ?? 30);
     const tiposRaw = String(req.query.tipos ?? '');

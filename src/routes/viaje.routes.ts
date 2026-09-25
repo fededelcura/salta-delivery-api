@@ -10,19 +10,19 @@ import {
 
 const router = Router();
 
+/** Preview de tarifa — público (pedido invitado / PWA) */
+router.post(
+  '/calcular-tarifa',
+  validate({ body: calcularTarifaSchema }),
+  asyncHandler(viajeController.calcularTarifa),
+);
+
 router.use(authenticate);
 
 router.get(
   '/',
   validate({ query: viajesFiltroSchema }),
   asyncHandler(viajeController.listar),
-);
-
-/** Preview de tarifa (sin viaje persistido) */
-router.post(
-  '/calcular-tarifa',
-  validate({ body: calcularTarifaSchema }),
-  asyncHandler(viajeController.calcularTarifa),
 );
 
 router.get(

@@ -369,6 +369,122 @@ export class AuthModel {
     if (!result.recordset.length) throw new NotFoundError('Teléfono no encontrado');
     return { telefono, verificado: true };
   }
+
+  /**
+   * Cliente invitado por teléfono (pedido sin login previo).
+   * Reusa cuenta si el teléfono ya es de un cliente; crea una activa si no existe.
+   */
+  async findOrCreateGuestCliente(input: {
+    telefono: string;
+    nombre: string;
+    email?: string;
+  }) {
+    const telefono = normalizeTelefono(input.telefono);
+    if (telefono.length < 8) {
+      throw new ValidationError('Teléfono inválido');
+    }
+
+    const existing = await this.findByTelefono(telefono);
+    if (existing) {
+      if (existing.rol !== 'cliente') {
+        throw new ConflictError('Ese teléfono pertenece a otra cuenta');
+      }
+      if (existing.estado === 'suspendido' || existing.estado === 'inactivo') {
+        throw new UnauthorizedError('Usuario suspendido o dado de baja');
+      }
+      // Asegurar fila cliente + activar si quedó pendiente
+      const pool = await getPool();
+      const cli = await pool
+        .request()
+        .input('id', sql.UniqueIdentifier, existing.id)
+        .query(`SELECT 1 AS x FROM clientes WHERE usuario_id = @id`);
+      if (!cli.recordset[0]) {
+        const dni = guestDni(telefono);
+        await pool
+          .request()
+          .input('id', sql.UniqueIdentifier, existing.id)
+          .input('dni', sql.NVarChar(20), dni)
+          .query(`INSERT INTO clientes (usuario_id, dni) VALUES (@id, @dni)`);
+      }
+      if (existing.estado !== 'activo') {
+        await pool
+          .request()
+          .input('id', sql.UniqueIdentifier, existing.id)
+          .query(`UPDATE usuarios SET estado = 'activo' WHERE id = @id`);
+        existing.estado = 'activo';
+      }
+      if (input.nombre.trim() && input.nombre.trim() !== existing.nombre) {
+        await pool
+          .request()
+          .input('id', sql.UniqueIdentifier, existing.id)
+          .input('nombre', sql.NVarChar(150), input.nombre.trim())
+          .query(`UPDATE usuarios SET nombre = @nombre WHERE id = @id`);
+        existing.nombre = input.nombre.trim();
+      }
+      return existing;
+    }
+
+    const digits = telefono.replace(/\D/g, '');
+    let email =
+      input.email?.trim().toLowerCase() ||
+      `invitado.${digits}@guest.saltadelivery.local`;
+    if (await this.findByEmail(email)) {
+      if (input.email) {
+        throw new ConflictError('El email ya está registrado');
+      }
+      email = `invitado.${digits}.${Date.now().toString(36)}@guest.saltadelivery.local`;
+    }
+
+    const password_hash = await bcrypt.hash(
+      `guest-${digits}-${Date.now()}-${Math.random().toString(36)}`,
+      10,
+    );
+    const dni = guestDni(telefono);
+    const pool = await getPool();
+    const tx = new sql.Transaction(pool);
+    await tx.begin();
+
+    try {
+      const insertUser = await new sql.Request(tx)
+        .input('email', sql.NVarChar(255), email)
+        .input('telefono', sql.NVarChar(20), telefono)
+        .input('nombre', sql.NVarChar(150), input.nombre.trim())
+        .input('password_hash', sql.NVarChar(255), password_hash)
+        .query<{ id: string; numero_usuario: number }>(`
+          INSERT INTO usuarios (email, telefono, nombre, password_hash, rol, estado, email_verificado, telefono_verificado)
+          VALUES (@email, @telefono, @nombre, @password_hash, 'cliente', 'activo', FALSE, TRUE)
+          RETURNING id, numero_usuario
+        `);
+
+      const userId = insertUser.recordset[0]?.id;
+      if (!userId) throw new Error('No se pudo crear usuario invitado');
+
+      await new sql.Request(tx)
+        .input('id', sql.UniqueIdentifier, userId)
+        .input('dni', sql.NVarChar(20), dni)
+        .query(`INSERT INTO clientes (usuario_id, dni) VALUES (@id, @dni)`);
+
+      await tx.commit();
+      const created = await this.findById(userId);
+      if (!created) throw new Error('Usuario invitado no encontrado tras crear');
+      return created;
+    } catch (e) {
+      await tx.rollback();
+      rethrowSqlConflict(e);
+    }
+  }
+}
+
+function normalizeTelefono(raw: string): string {
+  const trimmed = raw.trim();
+  const hasPlus = trimmed.startsWith('+');
+  const digits = trimmed.replace(/\D/g, '');
+  return hasPlus ? `+${digits}` : digits;
+}
+
+function guestDni(telefono: string): string {
+  const digits = telefono.replace(/\D/g, '').slice(-12) || '0';
+  return `G${digits}`.slice(0, 20);
 }
 
 export const authModel = new AuthModel();

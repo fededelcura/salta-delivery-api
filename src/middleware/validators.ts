@@ -64,6 +64,13 @@ export const solicitarViajeSchema = z.object({
   tiempo_preparacion_min: z.number().int().min(0).max(180).optional(),
 });
 
+/** Pedido público (sin login): teléfono + nombre mínimos */
+export const solicitarViajeInvitadoSchema = solicitarViajeSchema.extend({
+  telefono: z.string().min(8).max(20),
+  nombre: z.string().min(2).max(150),
+  email: z.string().email().optional(),
+});
+
 export const cancelarViajeSchema = z.object({
   motivo: z.string().max(500).optional(),
 });

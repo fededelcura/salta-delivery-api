@@ -6,7 +6,7 @@ import type { AuthSession } from '../types/api.js';
 import type { RolUsuario } from '../types/domain.js';
 import { env } from '../config/env.js';
 
-function toSession(user: {
+export function toSession(user: {
   id: string;
   numero_usuario: number;
   email: string;

@@ -11,11 +11,19 @@ import {
   crearTarjetaSchema,
   idParamSchema,
   recargarBilleteraSchema,
+  solicitarViajeInvitadoSchema,
   solicitarViajeSchema,
   viajeIdParamSchema,
 } from '../middleware/validators.js';
 
 const router = Router();
+
+/** Pedido sin login (teléfono mínimo) */
+router.post(
+  '/solicitar-invitado',
+  validate({ body: solicitarViajeInvitadoSchema }),
+  asyncHandler(clienteController.solicitarViajeInvitado),
+);
 
 router.use(authenticate, authorize('cliente'));
 

@@ -549,6 +549,76 @@ export class AdminModel {
     return { id: result.recordset[0]?.id, ...input };
   }
 
+  /** Crea incidencia si no hay otra abierta del mismo tipo para el viaje. */
+  async crearIncidenciaSiNoExiste(input: {
+    viaje_id: string;
+    usuario_reporta: string;
+    tipo: string;
+    nivel: string;
+    descripcion: string;
+  }) {
+    const pool = await getPool();
+    const existing = await pool
+      .request()
+      .input('viaje', sql.UniqueIdentifier, input.viaje_id)
+      .input('tipo', sql.NVarChar(30), input.tipo)
+      .query<{ id: string }>(`
+        SELECT id FROM incidencias
+        WHERE viaje_id = @viaje
+          AND tipo = @tipo
+          AND estado IN ('abierta', 'en_proceso', 'escalada')
+        LIMIT 1
+      `);
+    if (existing.recordset[0]?.id) {
+      return { id: existing.recordset[0].id, already_exists: true, ...input };
+    }
+    const created = await this.crearIncidencia(input);
+    return { ...created, already_exists: false };
+  }
+
+  /** Sube nivel/tipo a sin_cadete alta si ya existe alerta del viaje, o crea una. */
+  async escalarSinCadete(input: {
+    viaje_id: string;
+    usuario_reporta: string;
+    descripcion: string;
+  }) {
+    const pool = await getPool();
+    const existing = await pool
+      .request()
+      .input('viaje', sql.UniqueIdentifier, input.viaje_id)
+      .query<{ id: string; tipo: string }>(`
+        SELECT id, tipo FROM incidencias
+        WHERE viaje_id = @viaje
+          AND estado IN ('abierta', 'en_proceso', 'escalada')
+          AND tipo IN ('viaje_nuevo', 'sin_cadete', 'buscando_cadete')
+        ORDER BY fecha_creacion DESC
+        LIMIT 1
+      `);
+    const row = existing.recordset[0];
+    if (row) {
+      await pool
+        .request()
+        .input('id', sql.UniqueIdentifier, row.id)
+        .input('desc', sql.NVarChar(2000), input.descripcion)
+        .query(`
+          UPDATE incidencias
+          SET tipo = 'sin_cadete',
+              nivel = 'alta',
+              estado = 'escalada',
+              descripcion = @desc
+          WHERE id = @id
+        `);
+      return { id: row.id, escalated: true };
+    }
+    return this.crearIncidencia({
+      viaje_id: input.viaje_id,
+      usuario_reporta: input.usuario_reporta,
+      tipo: 'sin_cadete',
+      nivel: 'alta',
+      descripcion: input.descripcion,
+    });
+  }
+
   private readonly PLANES_FALLBACK = {
     cliente: [
       { plan: 'gratuito', monto_mensual: 0, descuento_pct: 0 },

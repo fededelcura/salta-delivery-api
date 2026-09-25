@@ -78,6 +78,11 @@ router.post(
   asyncHandler(adminController.reactivarCliente),
 );
 router.get('/viajes', asyncHandler(adminController.viajes));
+router.post(
+  '/viajes/:id/despachar-cercano',
+  validate({ params: idParamSchema }),
+  asyncHandler(adminController.despacharCercano),
+);
 router.get('/reportes', asyncHandler(adminController.reportes));
 router.get('/reportes/guardados', asyncHandler(adminController.listarReportesGuardados));
 router.get(

@@ -17,6 +17,17 @@ import { cadeteModel } from './cadete.model.js';
 import { clienteModel } from './cliente.model.js';
 import { getRedis } from '../config/redis.js';
 import { parseJsonField } from '../utils/json-field.js';
+import { adminModel } from './admin.model.js';
+import type { ScoreAsignacion } from '../types/domain.js';
+
+/** TTL ranking Redis (cubre timeout 5 min + margen). */
+const RANKING_TTL_SEC = 600;
+/** Oferta exclusiva a top N los primeros minutos. */
+const TOP_OFERTA = 8;
+/** Tras esto, pool abierto a todos los online cercanos. */
+const POOL_ABIERTO_MS = 2 * 60 * 1000;
+/** Sin accept → escalar alarma admin. */
+export const TIMEOUT_SIN_ACEPT_MS = 5 * 60 * 1000;
 
 interface ViajeRow {
   id: string;
@@ -248,8 +259,11 @@ export class ViajeModel {
       /* ignore */
     }
 
-    // Intento de asignación automática
-    await this.intentarAsignar(id);
+    // Oferta a cadetes cercanos + alerta admin en paralelo
+    await Promise.all([
+      this.intentarAsignar(id),
+      this.alertarAdminViajeNuevo(id, input.clienteId, input.origen_direccion, input.destino_direccion),
+    ]);
 
     const viaje = await this.getById(id);
     const redis = getRedis();
@@ -259,9 +273,30 @@ export class ViajeModel {
     return viaje;
   }
 
-  async intentarAsignar(viajeId: string) {
+  private async alertarAdminViajeNuevo(
+    viajeId: string,
+    clienteId: string,
+    origen: string,
+    destino: string,
+  ) {
+    try {
+      await adminModel.crearIncidenciaSiNoExiste({
+        viaje_id: viajeId,
+        usuario_reporta: clienteId,
+        tipo: 'viaje_nuevo',
+        nivel: 'media',
+        descripcion: `Nuevo viaje buscando cadete. ${origen.slice(0, 80)} → ${destino.slice(0, 80)}`,
+      });
+    } catch (err) {
+      console.error('[alerta] viaje_nuevo', viajeId, err);
+    }
+  }
+
+  async intentarAsignar(viajeId: string, radioMaxKm = 12) {
     const viaje = await this.getById(viajeId);
-    if (viaje.estado !== 'buscando_cadete' && viaje.estado !== 'solicitado') return viaje;
+    if (viaje.estado !== 'buscando_cadete' && viaje.estado !== 'solicitado') {
+      return { viaje, ranking: null, ranking_total: 0 };
+    }
 
     const disponibles = await cadeteModel.listarDisponiblesCercanos();
     const ahora = Date.now();
@@ -278,18 +313,67 @@ export class ViajeModel {
           : 999,
       }));
 
-    const best = asignacionService.mejorCadete(viaje.origen, candidatos, null);
-    // No auto-asigna: deja ranking en Redis para ofertar
+    const ranking = asignacionService.rankear({
+      origen: viaje.origen,
+      candidatos,
+      radioMaxKm,
+    });
+    const best = ranking[0] ?? null;
     const redis = getRedis();
-    if (redis && best) {
+    if (redis) {
       await redis.set(
         `viaje:${viajeId}:ranking`,
-        JSON.stringify(asignacionService.rankear({ origen: viaje.origen, candidatos })),
+        JSON.stringify(ranking),
         'EX',
-        120,
+        RANKING_TTL_SEC,
       );
     }
-    return { viaje, ranking: best };
+    return { viaje, ranking: best, ranking_total: ranking.length };
+  }
+
+  /** Admin: refresca oferta al ranking más cercano. */
+  async despacharCercano(viajeId: string) {
+    const viaje = await this.getById(viajeId);
+    if (!['buscando_cadete', 'solicitado'].includes(viaje.estado) || viaje.cadete_id) {
+      throw new AppError('El viaje ya no está buscando cadete', 409, 'VIAJE_NO_DISPONIBLE');
+    }
+    const result = await this.intentarAsignar(viajeId, 15);
+    try {
+      await adminModel.crearIncidenciaSiNoExiste({
+        viaje_id: viajeId,
+        usuario_reporta: viaje.cliente_id,
+        tipo: 'viaje_nuevo',
+        nivel: 'media',
+        descripcion: `Admin re-despachó oferta cercana (${result.ranking_total ?? 0} candidatos).`,
+      });
+    } catch {
+      /* ignore */
+    }
+    return result;
+  }
+
+  /** Worker: 5 min sin accept → escalar incidencia + re-ofertar. */
+  async procesarViajesSinAceptacion() {
+    const list = await this.listar({ estado: 'buscando_cadete', pageSize: 100 });
+    const now = Date.now();
+    let escalados = 0;
+    for (const v of list.items) {
+      if (v.cadete_id) continue;
+      const age = now - new Date(v.fecha_solicitud).getTime();
+      if (age < TIMEOUT_SIN_ACEPT_MS) continue;
+      try {
+        await adminModel.escalarSinCadete({
+          viaje_id: v.id,
+          usuario_reporta: v.cliente_id,
+          descripcion: `Sin cadete tras 5 min. ${v.origen_direccion?.slice(0, 60) ?? ''} → ${v.destino_direccion?.slice(0, 60) ?? ''}`,
+        });
+        await this.intentarAsignar(v.id, 18);
+        escalados += 1;
+      } catch (err) {
+        console.error('[worker] sin_aceptacion', v.id, err);
+      }
+    }
+    return { escalados, revisados: list.items.length };
   }
 
   async listar(filtros: {
@@ -530,17 +614,53 @@ export class ViajeModel {
   async viajesDisponiblesParaCadete(cadeteId: string) {
     const cadete = await cadeteModel.getById(cadeteId);
     const list = await this.listar({ estado: 'buscando_cadete', pageSize: 50 });
-    if (!cadete.ubicacion_actual) return list.items;
+    const redis = getRedis();
+    const now = Date.now();
 
-    return list.items
-      .map((v) => ({
-        ...v,
-        distancia_al_origen_km: geolocalizacionService.distanciaKm(
-          cadete.ubicacion_actual!,
-          v.origen,
-        ),
-      }))
-      .sort((a, b) => a.distancia_al_origen_km - b.distancia_al_origen_km);
+    type Item = (typeof list.items)[number] & {
+      distancia_al_origen_km?: number;
+      oferta_rank?: number;
+    };
+
+    const out: Item[] = [];
+    for (const v of list.items) {
+      const dist = cadete.ubicacion_actual
+        ? geolocalizacionService.distanciaKm(cadete.ubicacion_actual, v.origen)
+        : 999;
+      const age = now - new Date(v.fecha_solicitud).getTime();
+      let oferta_rank = 500;
+      let include = true;
+
+      if (redis) {
+        try {
+          const raw = await redis.get(`viaje:${v.id}:ranking`);
+          if (raw) {
+            const ranking = JSON.parse(raw) as ScoreAsignacion[];
+            const idx = ranking.findIndex((r) => r.cadete_id === cadeteId);
+            if (idx >= 0 && idx < TOP_OFERTA) {
+              oferta_rank = idx;
+            } else if (age < POOL_ABIERTO_MS && ranking.length > 0) {
+              // Primeros 2 min: solo top ranking
+              include = false;
+            } else {
+              oferta_rank = idx >= 0 ? idx : 200 + Math.min(dist, 99);
+            }
+          }
+        } catch {
+          /* pool abierto si Redis falla */
+        }
+      }
+
+      if (!include) continue;
+      out.push({ ...v, distancia_al_origen_km: dist, oferta_rank });
+    }
+
+    return out.sort((a, b) => {
+      const ra = a.oferta_rank ?? 500;
+      const rb = b.oferta_rank ?? 500;
+      if (ra !== rb) return ra - rb;
+      return (a.distancia_al_origen_km ?? 999) - (b.distancia_al_origen_km ?? 999);
+    });
   }
 }
 

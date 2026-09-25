@@ -4,6 +4,7 @@ import { env } from './config/env.js';
 import { getPool, closePool } from './config/database.js';
 import { connectRedis, disconnectRedis } from './config/redis.js';
 import { setupSockets } from './sockets/index.js';
+import { startViajeAlertaWorker, stopViajeAlertaWorker } from './jobs/viaje-alerta.worker.js';
 
 async function main(): Promise<void> {
   const app = createApp();
@@ -23,6 +24,7 @@ async function main(): Promise<void> {
   }
 
   await connectRedis();
+  startViajeAlertaWorker();
 
   server.listen(env.PORT, () => {
     console.info(`[api] Salta Delivery escuchando en http://localhost:${env.PORT}`);
@@ -31,6 +33,7 @@ async function main(): Promise<void> {
 
   const shutdown = async () => {
     console.info('Cerrando…');
+    stopViajeAlertaWorker();
     server.close();
     await disconnectRedis();
     await closePool();

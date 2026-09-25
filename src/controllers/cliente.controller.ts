@@ -1,9 +1,11 @@
 import type { Request, Response } from 'express';
+import { authModel } from '../models/auth.model.js';
 import { clienteModel } from '../models/cliente.model.js';
 import { viajeModel } from '../models/viaje.model.js';
 import { adminModel } from '../models/admin.model.js';
 import { medioPagoModel } from '../models/medio-pago.model.js';
 import { comprobanteModel } from '../models/facturacion.model.js';
+import { toSession } from './auth.controller.js';
 import { ok, created } from '../utils/response.js';
 import { UnauthorizedError } from '../utils/errors.js';
 import type { DireccionFavorita, MetodoPago, PlanCliente } from '../types/domain.js';
@@ -124,6 +126,52 @@ export class ClienteController {
     }
 
     ok(res, viaje, 201);
+  };
+
+  /** Pedido público: crea/reusa cliente por teléfono y devuelve sesión JWT */
+  solicitarViajeInvitado = async (req: Request, res: Response): Promise<void> => {
+    const body = req.body as {
+      telefono: string;
+      nombre: string;
+      email?: string;
+      tipo_servicio: string;
+      origen_direccion: string;
+      origen: { lat: number; lng: number };
+      destino_direccion: string;
+      destino: { lat: number; lng: number };
+      metodo_pago: string;
+      tiempo_preparacion_min?: number;
+    };
+
+    const user = await authModel.findOrCreateGuestCliente({
+      telefono: body.telefono,
+      nombre: body.nombre,
+      email: body.email,
+    });
+
+    const viaje = await viajeModel.solicitar({
+      clienteId: user.id,
+      tipo_servicio: body.tipo_servicio as 'delivery' | 'mensajeria' | 'envio_paquete',
+      origen_direccion: body.origen_direccion,
+      origen: body.origen,
+      destino_direccion: body.destino_direccion,
+      destino: body.destino,
+      metodo_pago: body.metodo_pago as 'efectivo' | 'mercadopago' | 'tarjeta' | 'billetera',
+      tiempo_preparacion_min: body.tiempo_preparacion_min,
+    });
+
+    try {
+      await clienteModel.agregarDireccionUsada(user.id, {
+        alias: 'Destino reciente',
+        direccion: body.destino_direccion,
+        lat: body.destino.lat,
+        lng: body.destino.lng,
+      });
+    } catch {
+      /* no bloquear */
+    }
+
+    created(res, { viaje, session: toSession(user) });
   };
 
   cancelarViaje = async (req: Request, res: Response): Promise<void> => {
