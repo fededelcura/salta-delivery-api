@@ -320,6 +320,11 @@ export const adminUmbralNegociosSchema = z.object({
   monto: z.number().min(0).max(100_000_000),
 });
 
+export const adminDespachoAnillosSchema = z.object({
+  radios_km: z.array(z.number().positive().max(50)).min(1).max(6),
+  paso_seg: z.number().int().min(10).max(1800),
+});
+
 export const liquidacionTransferirSchema = z.object({
   nota: z.string().max(500).optional(),
 });

@@ -10,6 +10,7 @@ import {
   adminConfigTarifasSchema,
   adminCrearCadeteSchema,
   adminCrearClienteSchema,
+  adminDespachoAnillosSchema,
   adminGuardarReporteSchema,
   adminIncidenciaSchema,
   adminPlanesSchema,
@@ -88,6 +89,13 @@ router.put(
   '/negocios/umbral',
   validate({ body: adminUmbralNegociosSchema }),
   asyncHandler(adminController.setUmbralNegocios),
+);
+router.get('/mapa-calor', asyncHandler(adminController.mapaCalor));
+router.get('/despacho/anillos', asyncHandler(adminController.getDespachoAnillos));
+router.put(
+  '/despacho/anillos',
+  validate({ body: adminDespachoAnillosSchema }),
+  asyncHandler(adminController.setDespachoAnillos),
 );
 router.get('/viajes', asyncHandler(adminController.viajes));
 router.post(

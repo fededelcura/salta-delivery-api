@@ -10,6 +10,7 @@ import { cadeteActividadModel } from '../models/cadete_actividad.model.js';
 import { zonaModel } from '../models/zona.model.js';
 import { pagoEnvioModel } from '../models/pago-envio.model.js';
 import { envioNegocioService } from '../services/envio-negocio.service.js';
+import { despachoService } from '../services/despacho.service.js';
 import {
   DOC_TIPOS,
   docJsonKey,
@@ -592,6 +593,19 @@ export class AdminController {
 
   setUmbralNegocios = async (req: Request, res: Response): Promise<void> => {
     ok(res, await envioNegocioService.setUmbralDefault(Number((req.body as { monto: number }).monto)));
+  };
+
+  mapaCalor = async (req: Request, res: Response): Promise<void> => {
+    const horas = Math.min(24 * 30, Math.max(1, Number(req.query.horas ?? 24) || 24));
+    ok(res, await despachoService.mapaCalor(horas));
+  };
+
+  getDespachoAnillos = async (_req: Request, res: Response): Promise<void> => {
+    ok(res, await despachoService.getConfig());
+  };
+
+  setDespachoAnillos = async (req: Request, res: Response): Promise<void> => {
+    ok(res, await despachoService.setConfig(req.body as { radios_km: number[]; paso_seg: number }));
   };
 
   actividadCadetes = async (req: Request, res: Response): Promise<void> => {

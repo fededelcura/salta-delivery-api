@@ -22,6 +22,7 @@ import { adminModel } from './admin.model.js';
 import type { ScoreAsignacion } from '../types/domain.js';
 import { randomUUID } from 'node:crypto';
 import { envioNegocioService, esNegocio } from '../services/envio-negocio.service.js';
+import { despachoService, radioParaEdad } from '../services/despacho.service.js';
 
 /** TTL ranking Redis (cubre timeout 5 min + margen). */
 const RANKING_TTL_SEC = 600;
@@ -31,8 +32,6 @@ const TOP_OFERTA = 8;
 const POOL_ABIERTO_MS = 2 * 60 * 1000;
 /** Sin accept → escalar alarma admin. */
 export const TIMEOUT_SIN_ACEPT_MS = 5 * 60 * 1000;
-/** Radio del listado de viajes disponibles para un cadete (≥ radio máximo de re-oferta). */
-const RADIO_DISPONIBLES_KM = 25;
 
 /** `ts` viaja como texto con microsegundos: Date de JS truncaría a ms y saltearía filas. */
 function encodeCursor(ts: string, id: string): string {
@@ -353,7 +352,8 @@ export class ViajeModel {
     }
   }
 
-  async intentarAsignar(viajeId: string, radioMaxKm = 12) {
+  async intentarAsignar(viajeId: string, radioMaxKm?: number) {
+    radioMaxKm ??= await despachoService.radioMaximo();
     const viaje = await this.getById(viajeId);
     if (viaje.estado !== 'buscando_cadete' && viaje.estado !== 'solicitado') {
       return { viaje, ranking: null, ranking_total: 0 };
@@ -398,7 +398,7 @@ export class ViajeModel {
     if (!['buscando_cadete', 'solicitado'].includes(viaje.estado) || viaje.cadete_id) {
       throw new AppError('El viaje ya no está buscando cadete', 409, 'VIAJE_NO_DISPONIBLE');
     }
-    const result = await this.intentarAsignar(viajeId, 15);
+    const result = await this.intentarAsignar(viajeId);
     try {
       await adminModel.crearIncidenciaSiNoExiste({
         viaje_id: viajeId,
@@ -424,7 +424,7 @@ export class ViajeModel {
           usuario_reporta: v.cliente_id,
           descripcion: `Sin cadete tras 5 min. ${v.origen_direccion?.slice(0, 60) ?? ''} → ${v.destino_direccion?.slice(0, 60) ?? ''}`,
         });
-        await this.intentarAsignar(v.id, 18);
+        await this.intentarAsignar(v.id);
         escalados += 1;
       } catch (err) {
         console.error('[worker] sin_aceptacion', v.id, err);
@@ -729,26 +729,30 @@ export class ViajeModel {
   }
 
   async viajesDisponiblesParaCadete(cadeteId: string) {
+    type Item = Viaje & {
+      distancia_al_origen_km?: number;
+      oferta_rank?: number;
+      radio_oferta_km?: number;
+    };
+
     const cadete = await cadeteModel.getById(cadeteId);
+    const ubicacion = cadete.ubicacion_actual;
+    if (!ubicacion) return [] as Item[];
+
+    const cfg = await despachoService.getConfig();
+    const radioMax = cfg.radios_km[cfg.radios_km.length - 1];
     const pendientes = await this.listarBuscandoSinCadete({
-      cerca: cadete.ubicacion_actual
-        ? { ...cadete.ubicacion_actual, radioKm: RADIO_DISPONIBLES_KM }
-        : undefined,
+      cerca: { ...ubicacion, radioKm: radioMax },
     });
     const redis = getRedis();
     const now = Date.now();
 
-    type Item = Viaje & {
-      distancia_al_origen_km?: number;
-      oferta_rank?: number;
-    };
-
     const out: Item[] = [];
     for (const v of pendientes) {
-      const dist = cadete.ubicacion_actual
-        ? geolocalizacionService.distanciaKm(cadete.ubicacion_actual, v.origen)
-        : 999;
+      const dist = geolocalizacionService.distanciaKm(ubicacion, v.origen);
       const age = now - new Date(v.fecha_solicitud).getTime();
+      const radioOferta = radioParaEdad(cfg, age);
+      if (dist > radioOferta) continue;
       let oferta_rank = 500;
       let include = true;
 
@@ -773,7 +777,7 @@ export class ViajeModel {
       }
 
       if (!include) continue;
-      out.push({ ...v, distancia_al_origen_km: dist, oferta_rank });
+      out.push({ ...v, distancia_al_origen_km: dist, oferta_rank, radio_oferta_km: radioOferta });
     }
 
     return out.sort((a, b) => {
