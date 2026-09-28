@@ -5,6 +5,7 @@ import cadeteRoutes from './cadete.routes.js';
 import viajeRoutes from './viaje.routes.js';
 import suscripcionRoutes from './suscripcion.routes.js';
 import adminRoutes from './admin.routes.js';
+import pagoRoutes from './pago.routes.js';
 
 const router = Router();
 
@@ -14,6 +15,7 @@ router.use('/cadetes', cadeteRoutes);
 router.use('/viajes', viajeRoutes);
 router.use('/suscripciones', suscripcionRoutes);
 router.use('/admin', adminRoutes);
+router.use('/pagos', pagoRoutes);
 
 router.get('/health', (_req, res) => {
   res.json({

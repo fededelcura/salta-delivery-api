@@ -109,7 +109,19 @@ export class FacturacionService {
         distancia_km: viaje.distancia_km,
         plan_cadete: cadete.plan_suscripcion,
         detalle_tarifa: detalleBase,
+        ...(viaje.importe_pedido != null
+          ? {
+              importe_pedido: viaje.importe_pedido,
+              pagador_envio: viaje.pagador_envio,
+              destinatario_nombre: viaje.destinatario_nombre,
+              destinatario_telefono: viaje.destinatario_telefono,
+            }
+          : {}),
       };
+      const estadoPagoCliente =
+        viaje.metodo_pago === 'cuenta_negocio' || viaje.pago_token
+          ? viaje.estado_pago
+          : 'aprobado';
 
       await comprobanteModel.insert(tx, {
         numero: numCliente,
@@ -147,6 +159,7 @@ export class FacturacionService {
         .input('monto', sql.Decimal(12, 2), tarifa)
         .input('metodo', sql.NVarChar(20), viaje.metodo_pago)
         .input('url', sql.NVarChar(1000), numCliente)
+        .input('estado', sql.NVarChar(20), estadoPagoCliente)
         .input(
           'meta',
           sql.NVarChar(sql.MAX),
@@ -156,7 +169,8 @@ export class FacturacionService {
           INSERT INTO pagos (
             usuario_id, viaje_id, tipo, monto, metodo_pago, estado, fecha_pago, metadata_json, factura_url
           )
-          SELECT @uid, @viaje, 'viaje', @monto, @metodo, 'aprobado', NOW(), @meta::jsonb, @url
+          SELECT @uid, @viaje, 'viaje', @monto, @metodo, @estado,
+                 CASE WHEN @estado = 'aprobado' THEN NOW() ELSE NULL END, @meta::jsonb, @url
           WHERE NOT EXISTS (
             SELECT 1 FROM pagos
             WHERE viaje_id = @viaje AND tipo = 'viaje' AND usuario_id = @uid

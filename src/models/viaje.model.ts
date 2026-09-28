@@ -4,6 +4,7 @@ import type {
   DetalleTarifa,
   EstadoViaje,
   MetodoPago,
+  PagadorEnvio,
   PlanCadete,
   PlanCliente,
   TipoServicio,
@@ -19,6 +20,8 @@ import { getRedis } from '../config/redis.js';
 import { parseJsonField } from '../utils/json-field.js';
 import { adminModel } from './admin.model.js';
 import type { ScoreAsignacion } from '../types/domain.js';
+import { randomUUID } from 'node:crypto';
+import { envioNegocioService, esNegocio } from '../services/envio-negocio.service.js';
 
 /** TTL ranking Redis (cubre timeout 5 min + margen). */
 const RANKING_TTL_SEC = 600;
@@ -70,6 +73,11 @@ interface ViajeRow {
   estado_pago: string;
   calificacion_cliente: number | null;
   calificacion_cadete: number | null;
+  importe_pedido: number | null;
+  pagador_envio: PagadorEnvio | null;
+  destinatario_nombre: string | null;
+  destinatario_telefono: string | null;
+  pago_token: string | null;
 }
 
 function mapViaje(row: ViajeRow): Viaje {
@@ -104,19 +112,30 @@ function mapViaje(row: ViajeRow): Viaje {
     estado_pago: row.estado_pago as Viaje['estado_pago'],
     calificacion_cliente: row.calificacion_cliente,
     calificacion_cadete: row.calificacion_cadete,
+    importe_pedido: row.importe_pedido != null ? Number(row.importe_pedido) : null,
+    pagador_envio: row.pagador_envio ?? 'cliente',
+    destinatario_nombre: row.destinatario_nombre ?? null,
+    destinatario_telefono: row.destinatario_telefono ?? null,
+    pago_token: row.pago_token ? String(row.pago_token) : null,
   };
 }
 
-const SELECT_VIAJE = `
-  SELECT id, cliente_id, cadete_id, tipo_servicio,
-         origen_direccion, origen_lat, origen_lng,
-         destino_direccion, destino_lat, destino_lng,
-         distancia_km, tiempo_estimado_min, tarifa_estimada, tarifa_final,
-         comision_plataforma, pago_cadete, detalle_tarifa, estado, fecha_solicitud,
-         tiempo_preparacion_min, listo_para_retiro_en,
-         metodo_pago, estado_pago, calificacion_cliente, calificacion_cadete
-  FROM viajes
+const VIAJE_COLUMNS = `
+  id, cliente_id, cadete_id, tipo_servicio,
+  origen_direccion, origen_lat, origen_lng,
+  destino_direccion, destino_lat, destino_lng,
+  distancia_km, tiempo_estimado_min, tarifa_estimada, tarifa_final,
+  comision_plataforma, pago_cadete, detalle_tarifa, estado, fecha_solicitud,
+  tiempo_preparacion_min, listo_para_retiro_en,
+  metodo_pago, estado_pago, calificacion_cliente, calificacion_cadete,
+  importe_pedido, pagador_envio, destinatario_nombre, destinatario_telefono, pago_token
 `;
+
+const SELECT_VIAJE = `SELECT ${VIAJE_COLUMNS} FROM viajes`;
+
+function round2(n: number): number {
+  return Math.round(n * 100) / 100;
+}
 
 export class ViajeModel {
   async getById(id: string) {
@@ -180,8 +199,28 @@ export class ViajeModel {
     destino: Coordenada;
     metodo_pago: MetodoPago;
     tiempo_preparacion_min?: number;
+    importe_pedido?: number;
+    destinatario_nombre?: string;
+    destinatario_telefono?: string;
   }) {
     const cliente = await clienteModel.getPerfil(input.clienteId);
+
+    let metodoPago = input.metodo_pago;
+    let pagador: PagadorEnvio = 'cliente';
+    let importe: number | null = null;
+    let umbralAplicado: number | null = null;
+    let pagoToken: string | null = null;
+    if (esNegocio(cliente) && input.importe_pedido != null) {
+      importe = round2(input.importe_pedido);
+      const r = await envioNegocioService.resolverPagador(cliente, importe);
+      pagador = r.pagador;
+      umbralAplicado = r.umbral;
+      metodoPago = pagador === 'negocio' ? 'cuenta_negocio' : 'mercadopago';
+      if (pagador === 'cliente') pagoToken = randomUUID();
+    } else if (metodoPago === 'cuenta_negocio') {
+      throw new AppError('Método de pago no disponible', 400, 'METODO_INVALIDO');
+    }
+
     const preview = await this.calcularTarifaPreview({
       origen: input.origen,
       destino: input.destino,
@@ -223,9 +262,14 @@ export class ViajeModel {
           tiempo_viaje_min: preview.tiempo_estimado_min,
         }),
       )
-      .input('metodo', sql.NVarChar(20), input.metodo_pago)
+      .input('metodo', sql.NVarChar(20), metodoPago)
       .input('prep', sql.Int, prep || null)
       .input('listo', sql.DateTimeOffset, listoEn)
+      .input('importe', sql.Decimal(12, 2), importe)
+      .input('pagador', sql.NVarChar(10), pagador)
+      .input('dnombre', sql.NVarChar(150), input.destinatario_nombre?.trim() || null)
+      .input('dtel', sql.NVarChar(20), input.destinatario_telefono?.trim() || null)
+      .input('token', sql.UniqueIdentifier, pagoToken)
       .query<{ id: string }>(`
         INSERT INTO viajes (
           cliente_id, tipo_servicio,
@@ -234,7 +278,8 @@ export class ViajeModel {
           distancia_km, tiempo_estimado_min,
           tarifa_estimada, tarifa_final, comision_plataforma, pago_cadete,
           detalle_tarifa, estado, metodo_pago, estado_pago,
-          tiempo_preparacion_min, listo_para_retiro_en
+          tiempo_preparacion_min, listo_para_retiro_en,
+          importe_pedido, pagador_envio, destinatario_nombre, destinatario_telefono, pago_token
         )
         VALUES (
           @cliente, @tipo,
@@ -243,7 +288,8 @@ export class ViajeModel {
           @dist, @tiempo,
           @tarifa, @tarifa, @comision, @pago,
           @detalle::jsonb, 'buscando_cadete', @metodo, 'pendiente',
-          @prep, @listo
+          @prep, @listo,
+          @importe, @pagador, @dnombre, @dtel, @token
         )
         RETURNING id
       `);
@@ -285,7 +331,7 @@ export class ViajeModel {
     if (redis) {
       await redis.publish('viajes:nuevos', JSON.stringify(viaje));
     }
-    return viaje;
+    return { ...viaje, umbral_aplicado: umbralAplicado };
   }
 
   private async alertarAdminViajeNuevo(
@@ -429,13 +475,7 @@ export class ViajeModel {
     const result = await req.query<ViajeRow & { total?: number; cursor_ts: string }>(`
       SELECT ${cursor ? '' : 'COUNT(*) OVER() AS total,'}
              to_char(fecha_solicitud AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS cursor_ts,
-             id, cliente_id, cadete_id, tipo_servicio,
-             origen_direccion, origen_lat, origen_lng,
-             destino_direccion, destino_lat, destino_lng,
-             distancia_km, tiempo_estimado_min, tarifa_estimada, tarifa_final,
-             comision_plataforma, pago_cadete, detalle_tarifa, estado, fecha_solicitud,
-             tiempo_preparacion_min, listo_para_retiro_en,
-             metodo_pago, estado_pago, calificacion_cliente, calificacion_cadete
+             ${VIAJE_COLUMNS}
       FROM viajes
       ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
       ORDER BY fecha_solicitud DESC, id DESC
@@ -525,6 +565,17 @@ export class ViajeModel {
       tipoServicio: viaje.tipo_servicio,
       origen: viaje.origen,
     });
+
+    // Pedidos de negocio: el monto ya se comunicó (cuenta corriente o link de pago), no cambia al aceptar.
+    if (viaje.importe_pedido != null && viaje.tarifa_estimada != null) {
+      const tarifa = viaje.tarifa_estimada;
+      const comision = round2((tarifa * detalle.comision_pct) / 100);
+      Object.assign(detalle, {
+        tarifa,
+        comision_plataforma: comision,
+        pago_cadete: round2(tarifa - comision),
+      });
+    }
 
     const pool = await getPool();
     const result = await pool

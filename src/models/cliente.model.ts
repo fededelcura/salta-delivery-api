@@ -16,6 +16,7 @@ interface ClienteRow {
   tipo_cuenta?: string;
   tiempo_preparacion_min?: number;
   horario_comercial?: string | null;
+  umbral_envio_negocio?: number | string | null;
   estado_suscripcion: string;
   fecha_inicio_suscripcion: Date | null;
   fecha_fin_suscripcion: Date | null;
@@ -58,6 +59,8 @@ function mapCliente(row: ClienteRow): Cliente & {
     horario_comercial: row.horario_comercial
       ? parseJsonField<Cliente['horario_comercial']>(row.horario_comercial, null)
       : null,
+    umbral_envio_negocio:
+      row.umbral_envio_negocio != null ? Number(row.umbral_envio_negocio) : null,
     estado_suscripcion: row.estado_suscripcion as Cliente['estado_suscripcion'],
     fecha_inicio_suscripcion: row.fecha_inicio_suscripcion
       ? new Date(row.fecha_inicio_suscripcion).toISOString()
@@ -241,6 +244,7 @@ export class ClienteModel {
       tipo_cuenta: 'particular' | 'restaurante' | 'comercio';
       tiempo_preparacion_min?: number;
       horario_comercial?: { abre?: string; cierra?: string; dias?: number[] } | null;
+      umbral_envio_negocio?: number | null;
     },
   ) {
     const pool = await getPool();
@@ -254,11 +258,13 @@ export class ClienteModel {
         sql.NVarChar(sql.MAX),
         input.horario_comercial ? JSON.stringify(input.horario_comercial) : null,
       )
+      .input('umbral', sql.Decimal(12, 2), input.umbral_envio_negocio ?? null)
       .query(`
         UPDATE clientes
         SET tipo_cuenta = @tipo,
             tiempo_preparacion_min = @prep,
             horario_comercial = @horario::jsonb,
+            umbral_envio_negocio = @umbral,
             fecha_actualizacion = NOW()
         WHERE usuario_id = @id
       `);
@@ -371,6 +377,7 @@ export class ClienteModel {
       provincia?: string | null;
       zona_h3?: string | null;
       zona_nombre?: string | null;
+      umbral_envio_negocio?: number | null;
       estado?: 'activo' | 'inactivo' | 'suspendido';
     },
   ) {
@@ -459,6 +466,13 @@ export class ClienteModel {
         sql.NVarChar(100),
         input.zona_nombre !== undefined ? input.zona_nombre : actual.zona_nombre,
       )
+      .input(
+        'umbral',
+        sql.Decimal(12, 2),
+        input.umbral_envio_negocio !== undefined
+          ? input.umbral_envio_negocio
+          : actual.umbral_envio_negocio,
+      )
       .query(`
         UPDATE clientes
         SET dni = @dni,
@@ -474,6 +488,7 @@ export class ClienteModel {
             provincia = @provincia,
             zona_h3 = @zona_h3,
             zona_nombre = @zona_nombre,
+            umbral_envio_negocio = @umbral,
             fecha_actualizacion = NOW()
         WHERE usuario_id = @id
       `);

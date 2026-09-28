@@ -7,7 +7,8 @@ import { medioPagoModel } from '../models/medio-pago.model.js';
 import { comprobanteModel } from '../models/facturacion.model.js';
 import { toSession } from './auth.controller.js';
 import { ok, created } from '../utils/response.js';
-import { UnauthorizedError } from '../utils/errors.js';
+import { ForbiddenError, UnauthorizedError } from '../utils/errors.js';
+import { envioNegocioService, esNegocio } from '../services/envio-negocio.service.js';
 import type { DireccionFavorita, MetodoPago, PlanCliente } from '../types/domain.js';
 import { emitViajeEstado } from '../sockets/index.js';
 
@@ -19,6 +20,12 @@ function uid(req: Request): string {
 export class ClienteController {
   perfil = async (req: Request, res: Response): Promise<void> => {
     ok(res, await clienteModel.getPerfil(uid(req)));
+  };
+
+  umbralNegocio = async (req: Request, res: Response): Promise<void> => {
+    const cliente = await clienteModel.getPerfil(uid(req));
+    if (!esNegocio(cliente)) throw new ForbiddenError('Solo para cuentas de negocio');
+    ok(res, await envioNegocioService.umbralPara(cliente));
   };
 
   actualizarPreferencias = async (req: Request, res: Response): Promise<void> => {
@@ -112,6 +119,9 @@ export class ClienteController {
       destino: { lat: number; lng: number };
       metodo_pago: string;
       tiempo_preparacion_min?: number;
+      importe_pedido?: number;
+      destinatario_nombre?: string;
+      destinatario_telefono?: string;
     };
     const viaje = await viajeModel.solicitar({
       clienteId: uid(req),
@@ -122,6 +132,9 @@ export class ClienteController {
       destino: body.destino,
       metodo_pago: body.metodo_pago as 'efectivo' | 'mercadopago' | 'tarjeta' | 'billetera',
       tiempo_preparacion_min: body.tiempo_preparacion_min,
+      importe_pedido: body.importe_pedido,
+      destinatario_nombre: body.destinatario_nombre,
+      destinatario_telefono: body.destinatario_telefono,
     });
 
     try {

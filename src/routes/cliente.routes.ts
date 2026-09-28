@@ -29,6 +29,7 @@ router.post(
 router.use(authenticate, authorize('cliente'));
 
 router.get('/perfil', asyncHandler(clienteController.perfil));
+router.get('/negocio/umbral', asyncHandler(clienteController.umbralNegocio));
 router.patch(
   '/perfil',
   validate({ body: clientePreferenciasSchema }),

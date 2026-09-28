@@ -62,6 +62,10 @@ export const solicitarViajeSchema = z.object({
   clima: z.string().optional(),
   /** Minutos de cocina / armado antes del retiro (restos y comercios) */
   tiempo_preparacion_min: z.number().int().min(0).max(180).optional(),
+  /** Negocios: valor de la mercadería; decide quién paga el envío */
+  importe_pedido: z.number().min(0).max(100_000_000).optional(),
+  destinatario_nombre: z.string().min(2).max(150).optional(),
+  destinatario_telefono: z.string().min(8).max(20).optional(),
 });
 
 /** Pedido público (sin login): teléfono + nombre mínimos */
@@ -232,6 +236,7 @@ export const adminCrearClienteSchema = z.object({
   direccion_parts: direccionEstructuradaSchema,
   tipo_cuenta: z.enum(['particular', 'restaurante', 'comercio']).default('particular'),
   tiempo_preparacion_min: z.number().int().min(0).max(180).optional(),
+  umbral_envio_negocio: z.number().min(0).max(100_000_000).nullable().optional(),
   horario_comercial: z
     .object({
       abre: z.string().optional(),
@@ -311,6 +316,10 @@ export const liquidacionPlazoSchema = z.object({
   dias: z.number().int().min(1).max(60),
 });
 
+export const adminUmbralNegociosSchema = z.object({
+  monto: z.number().min(0).max(100_000_000),
+});
+
 export const liquidacionTransferirSchema = z.object({
   nota: z.string().max(500).optional(),
 });
@@ -323,6 +332,7 @@ export const adminActualizarClienteSchema = z.object({
   plan_suscripcion: z.enum(['gratuito', 'basico', 'plus', 'business']).optional(),
   tipo_cuenta: z.enum(['particular', 'restaurante', 'comercio']).optional(),
   tiempo_preparacion_min: z.number().int().min(0).max(180).optional(),
+  umbral_envio_negocio: z.number().min(0).max(100_000_000).nullable().optional(),
   horario_comercial: z
     .object({
       abre: z.string().optional(),

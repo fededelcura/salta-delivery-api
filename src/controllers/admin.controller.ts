@@ -8,6 +8,8 @@ import { comisionModel, comprobanteModel } from '../models/facturacion.model.js'
 import { liquidacionModel } from '../models/liquidacion.model.js';
 import { cadeteActividadModel } from '../models/cadete_actividad.model.js';
 import { zonaModel } from '../models/zona.model.js';
+import { pagoEnvioModel } from '../models/pago-envio.model.js';
+import { envioNegocioService } from '../services/envio-negocio.service.js';
 import {
   DOC_TIPOS,
   docJsonKey,
@@ -150,6 +152,7 @@ export class AdminController {
       tipo_cuenta?: 'particular' | 'restaurante' | 'comercio';
       tiempo_preparacion_min?: number;
       horario_comercial?: { abre?: string; cierra?: string; dias?: number[] } | null;
+      umbral_envio_negocio?: number | null;
       direccion_parts?: {
         calle: string;
         numero: string;
@@ -200,6 +203,7 @@ export class AdminController {
         tipo_cuenta: body.tipo_cuenta,
         tiempo_preparacion_min: body.tiempo_preparacion_min,
         horario_comercial: body.horario_comercial,
+        umbral_envio_negocio: body.umbral_envio_negocio,
         estado: body.estado,
         ...zonaPatch,
       }),
@@ -302,6 +306,7 @@ export class AdminController {
       tiempo_preparacion_min?: number;
       horario_comercial?: { abre?: string; cierra?: string; dias?: number[] } | null;
       plan_suscripcion?: PlanCliente;
+      umbral_envio_negocio?: number | null;
       documento_dni: string;
     };
 
@@ -361,6 +366,7 @@ export class AdminController {
       tipo_cuenta: tipo,
       tiempo_preparacion_min: prepDefault,
       horario_comercial: body.horario_comercial ?? null,
+      umbral_envio_negocio: body.umbral_envio_negocio ?? null,
     });
     created(res, perfil);
   };
@@ -570,6 +576,22 @@ export class AdminController {
 
   setPlazoLiquidacion = async (req: Request, res: Response): Promise<void> => {
     ok(res, await liquidacionModel.setPlazo(Number((req.body as { dias: number }).dias)));
+  };
+
+  cuentaNegocio = async (req: Request, res: Response): Promise<void> => {
+    ok(res, await pagoEnvioModel.cuentaNegocio(String(req.params.id)));
+  };
+
+  marcarCobrado = async (req: Request, res: Response): Promise<void> => {
+    ok(res, await pagoEnvioModel.marcarCobrado(String(req.params.id)));
+  };
+
+  getUmbralNegocios = async (_req: Request, res: Response): Promise<void> => {
+    ok(res, { monto: await envioNegocioService.getUmbralDefault() });
+  };
+
+  setUmbralNegocios = async (req: Request, res: Response): Promise<void> => {
+    ok(res, await envioNegocioService.setUmbralDefault(Number((req.body as { monto: number }).monto)));
   };
 
   actividadCadetes = async (req: Request, res: Response): Promise<void> => {

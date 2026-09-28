@@ -13,6 +13,7 @@ import {
   adminGuardarReporteSchema,
   adminIncidenciaSchema,
   adminPlanesSchema,
+  adminUmbralNegociosSchema,
   adminZonaSchema,
   idParamSchema,
   liquidacionPlazoSchema,
@@ -77,7 +78,23 @@ router.post(
   validate({ params: idParamSchema }),
   asyncHandler(adminController.reactivarCliente),
 );
+router.get(
+  '/negocios/:id/cuenta',
+  validate({ params: idParamSchema }),
+  asyncHandler(adminController.cuentaNegocio),
+);
+router.get('/negocios/umbral', asyncHandler(adminController.getUmbralNegocios));
+router.put(
+  '/negocios/umbral',
+  validate({ body: adminUmbralNegociosSchema }),
+  asyncHandler(adminController.setUmbralNegocios),
+);
 router.get('/viajes', asyncHandler(adminController.viajes));
+router.post(
+  '/viajes/:id/marcar-cobrado',
+  validate({ params: idParamSchema }),
+  asyncHandler(adminController.marcarCobrado),
+);
 router.post(
   '/viajes/:id/despachar-cercano',
   validate({ params: idParamSchema }),

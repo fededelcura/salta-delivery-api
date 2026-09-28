@@ -44,7 +44,9 @@ export type EstadoViaje =
   | 'finalizado'
   | 'cancelado';
 
-export type MetodoPago = 'efectivo' | 'mercadopago' | 'tarjeta' | 'billetera';
+export type MetodoPago = 'efectivo' | 'mercadopago' | 'tarjeta' | 'billetera' | 'cuenta_negocio';
+
+export type PagadorEnvio = 'cliente' | 'negocio';
 
 export type EstadoPago =
   | 'pendiente'
@@ -142,6 +144,8 @@ export interface Cliente {
   tipo_cuenta: TipoCuentaCliente;
   tiempo_preparacion_min: number;
   horario_comercial: { abre?: string; cierra?: string; dias?: number[] } | null;
+  /** Negocios: desde qué importe del pedido paga el envío el negocio (null = global) */
+  umbral_envio_negocio: number | null;
   estado_suscripcion: EstadoSuscripcion;
   fecha_inicio_suscripcion: string | null;
   fecha_fin_suscripcion: string | null;
@@ -239,6 +243,11 @@ export interface Viaje {
   estado_pago: EstadoPago;
   calificacion_cliente: number | null;
   calificacion_cadete: number | null;
+  importe_pedido: number | null;
+  pagador_envio: PagadorEnvio;
+  destinatario_nombre: string | null;
+  destinatario_telefono: string | null;
+  pago_token: string | null;
 }
 
 export interface Suscripcion {
