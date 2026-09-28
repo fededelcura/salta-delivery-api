@@ -103,6 +103,16 @@ export class AdminController {
       fotos_documentos: {},
     });
 
+    const pool = await getPool();
+    await pool
+      .request()
+      .input('id', sql.UniqueIdentifier, cadete.usuario_id)
+      .query(`
+        UPDATE usuarios
+        SET telefono_verificado = TRUE, email_verificado = TRUE
+        WHERE id = @id
+      `);
+
     const docs = body.documentos ?? {};
     const fotosPatch: Record<string, string> = {};
     for (const tipo of DOC_TIPOS) {

@@ -156,7 +156,7 @@ export class FacturacionService {
           INSERT INTO pagos (
             usuario_id, viaje_id, tipo, monto, metodo_pago, estado, fecha_pago, metadata_json, factura_url
           )
-          SELECT @uid, @viaje, 'viaje', @monto, @metodo, 'aprobado', NOW(), @meta, @url
+          SELECT @uid, @viaje, 'viaje', @monto, @metodo, 'aprobado', NOW(), @meta::jsonb, @url
           WHERE NOT EXISTS (
             SELECT 1 FROM pagos
             WHERE viaje_id = @viaje AND tipo = 'viaje' AND usuario_id = @uid
@@ -183,7 +183,7 @@ export class FacturacionService {
           INSERT INTO pagos (
             usuario_id, viaje_id, tipo, monto, metodo_pago, estado, fecha_pago, metadata_json, factura_url
           )
-          SELECT @uid, @viaje, 'comision', @monto, @metodo, 'aprobado', NOW(), @meta, @url
+          SELECT @uid, @viaje, 'comision', @monto, @metodo, 'aprobado', NOW(), @meta::jsonb, @url
           WHERE NOT EXISTS (
             SELECT 1 FROM pagos
             WHERE viaje_id = @viaje AND tipo = 'comision'
