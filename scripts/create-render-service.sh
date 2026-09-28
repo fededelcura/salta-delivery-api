@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Run after: render login
-# Creates Salta Delivery API on Render (free) wired to Neon + Vercel CORS.
+# Creates Salta Delivery API on Render (free) wired to Neon + CORS for the Render static web.
 
 set -euo pipefail
 
 REPO="${REPO:-https://github.com/fededelcura/sistema_cadeteria}"
-CORS_ORIGIN="${CORS_ORIGIN:-https://sistema-cadeteria-seven.vercel.app}"
+CORS_ORIGIN="${CORS_ORIGIN:-https://salta-delivery-web.onrender.com}"
 DATABASE_URL="${DATABASE_URL:?Set DATABASE_URL to your Neon connection string}"
 JWT_SECRET="${JWT_SECRET:-salta-delivery-prod-jwt-secret-2026}"
 
