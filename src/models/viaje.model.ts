@@ -28,6 +28,21 @@ const TOP_OFERTA = 8;
 const POOL_ABIERTO_MS = 2 * 60 * 1000;
 /** Sin accept → escalar alarma admin. */
 export const TIMEOUT_SIN_ACEPT_MS = 5 * 60 * 1000;
+/** Radio del listado de viajes disponibles para un cadete (≥ radio máximo de re-oferta). */
+const RADIO_DISPONIBLES_KM = 25;
+
+/** `ts` viaja como texto con microsegundos: Date de JS truncaría a ms y saltearía filas. */
+function encodeCursor(ts: string, id: string): string {
+  return Buffer.from(`${ts}|${id}`).toString('base64url');
+}
+
+function decodeCursor(cursor: string): { ts: string; id: string } {
+  const [ts, id] = Buffer.from(cursor, 'base64url').toString('utf8').split('|');
+  if (!ts || !id || Number.isNaN(Date.parse(ts)) || !/^[0-9a-f-]{36}$/i.test(id)) {
+    throw new AppError('Cursor inválido', 400, 'CURSOR_INVALIDO');
+  }
+  return { ts, id };
+}
 
 interface ViajeRow {
   id: string;
@@ -298,7 +313,7 @@ export class ViajeModel {
       return { viaje, ranking: null, ranking_total: 0 };
     }
 
-    const disponibles = await cadeteModel.listarDisponiblesCercanos();
+    const disponibles = await cadeteModel.listarDisponiblesCercanos(viaje.origen, radioMaxKm);
     const ahora = Date.now();
     const candidatos: CadeteCandidato[] = disponibles
       .filter((c) => c.ubicacion_actual)
@@ -354,13 +369,9 @@ export class ViajeModel {
 
   /** Worker: 5 min sin accept → escalar incidencia + re-ofertar. */
   async procesarViajesSinAceptacion() {
-    const list = await this.listar({ estado: 'buscando_cadete', pageSize: 100 });
-    const now = Date.now();
+    const vencidos = await this.listarBuscandoSinCadete({ olderThanMs: TIMEOUT_SIN_ACEPT_MS });
     let escalados = 0;
-    for (const v of list.items) {
-      if (v.cadete_id) continue;
-      const age = now - new Date(v.fecha_solicitud).getTime();
-      if (age < TIMEOUT_SIN_ACEPT_MS) continue;
+    for (const v of vencidos) {
       try {
         await adminModel.escalarSinCadete({
           viaje_id: v.id,
@@ -373,30 +384,51 @@ export class ViajeModel {
         console.error('[worker] sin_aceptacion', v.id, err);
       }
     }
-    return { escalados, revisados: list.items.length };
+    return { escalados, revisados: vencidos.length };
   }
 
+  /**
+   * Con `cursor` pagina por (fecha_solicitud, id) sin OFFSET ni COUNT: costo constante
+   * aunque la tabla crezca. Sin cursor mantiene page/total (panel admin).
+   */
   async listar(filtros: {
     cliente_id?: string;
     cadete_id?: string;
     estado?: string;
     page?: number;
     pageSize?: number;
+    cursor?: string;
   }) {
     const page = filtros.page ?? 1;
-    const pageSize = filtros.pageSize ?? 20;
-    const offset = (page - 1) * pageSize;
+    const pageSize = Math.min(Math.max(filtros.pageSize ?? 20, 1), 100);
+    const cursor = filtros.cursor ? decodeCursor(filtros.cursor) : null;
     const pool = await getPool();
-    const req = pool
-      .request()
-      .input('offset', sql.Int, offset)
-      .input('limit', sql.Int, pageSize)
-      .input('cliente', sql.UniqueIdentifier, filtros.cliente_id ?? null)
-      .input('cadete', sql.UniqueIdentifier, filtros.cadete_id ?? null)
-      .input('estado', sql.NVarChar(30), filtros.estado ?? null);
+    const req = pool.request().input('limit', sql.Int, cursor ? pageSize + 1 : pageSize);
 
-    const result = await req.query<ViajeRow & { total: number }>(`
-      SELECT COUNT(*) OVER() AS total,
+    const where: string[] = [];
+    if (filtros.cliente_id) {
+      req.input('cliente', sql.UniqueIdentifier, filtros.cliente_id);
+      where.push('cliente_id = @cliente');
+    }
+    if (filtros.cadete_id) {
+      req.input('cadete', sql.UniqueIdentifier, filtros.cadete_id);
+      where.push('cadete_id = @cadete');
+    }
+    if (filtros.estado) {
+      req.input('estado', sql.NVarChar(30), filtros.estado);
+      where.push('estado = @estado');
+    }
+    if (cursor) {
+      req.input('cts', sql.NVarChar(40), cursor.ts);
+      req.input('cid', sql.UniqueIdentifier, cursor.id);
+      where.push('(fecha_solicitud, id) < (@cts::timestamptz, @cid)');
+    } else {
+      req.input('offset', sql.Int, (page - 1) * pageSize);
+    }
+
+    const result = await req.query<ViajeRow & { total?: number; cursor_ts: string }>(`
+      SELECT ${cursor ? '' : 'COUNT(*) OVER() AS total,'}
+             to_char(fecha_solicitud AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS cursor_ts,
              id, cliente_id, cadete_id, tipo_servicio,
              origen_direccion, origen_lat, origen_lng,
              destino_direccion, destino_lat, destino_lng,
@@ -405,19 +437,53 @@ export class ViajeModel {
              tiempo_preparacion_min, listo_para_retiro_en,
              metodo_pago, estado_pago, calificacion_cliente, calificacion_cadete
       FROM viajes
-      WHERE (@cliente IS NULL OR cliente_id = @cliente)
-        AND (@cadete IS NULL OR cadete_id = @cadete)
-        AND (@estado IS NULL OR estado = @estado)
-      ORDER BY fecha_solicitud DESC
-      OFFSET @offset LIMIT @limit
+      ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+      ORDER BY fecha_solicitud DESC, id DESC
+      ${cursor ? '' : 'OFFSET @offset'} LIMIT @limit
     `);
 
+    const rows = result.recordset.slice(0, pageSize);
+    const total = cursor ? null : Number(result.recordset[0]?.total ?? 0);
+    const hasMore = cursor ? result.recordset.length > pageSize : page * pageSize < (total ?? 0);
+    const last = rows[rows.length - 1];
     return {
-      items: result.recordset.map(mapViaje),
-      total: Number(result.recordset[0]?.total ?? 0),
+      items: rows.map(mapViaje),
+      total,
       page,
       pageSize,
+      next_cursor: hasMore && last ? encodeCursor(last.cursor_ts, String(last.id)) : null,
     };
+  }
+
+  /** Viajes esperando cadete (usa ix_viajes_buscando). Opcional: más viejos que X ms o cerca de un punto. */
+  async listarBuscandoSinCadete(opts: {
+    olderThanMs?: number;
+    cerca?: { lat: number; lng: number; radioKm: number };
+    limit?: number;
+  } = {}) {
+    const pool = await getPool();
+    const req = pool.request().input('limit', sql.Int, Math.min(opts.limit ?? 200, 500));
+    const where = ["estado = 'buscando_cadete'", 'cadete_id IS NULL'];
+    if (opts.olderThanMs != null) {
+      req.input('antes', sql.DateTimeOffset, new Date(Date.now() - opts.olderThanMs));
+      where.push('fecha_solicitud < @antes');
+    }
+    if (opts.cerca) {
+      const box = geolocalizacionService.boundingBox(opts.cerca, opts.cerca.radioKm);
+      req
+        .input('minLat', sql.Float, box.minLat)
+        .input('maxLat', sql.Float, box.maxLat)
+        .input('minLng', sql.Float, box.minLng)
+        .input('maxLng', sql.Float, box.maxLng);
+      where.push('origen_lat BETWEEN @minLat AND @maxLat', 'origen_lng BETWEEN @minLng AND @maxLng');
+    }
+    const result = await req.query<ViajeRow>(`
+      ${SELECT_VIAJE}
+      WHERE ${where.join(' AND ')}
+      ORDER BY fecha_solicitud ASC
+      LIMIT @limit
+    `);
+    return result.recordset.map(mapViaje);
   }
 
   async cancelar(viajeId: string, usuarioId: string, motivo?: string) {
@@ -613,17 +679,21 @@ export class ViajeModel {
 
   async viajesDisponiblesParaCadete(cadeteId: string) {
     const cadete = await cadeteModel.getById(cadeteId);
-    const list = await this.listar({ estado: 'buscando_cadete', pageSize: 50 });
+    const pendientes = await this.listarBuscandoSinCadete({
+      cerca: cadete.ubicacion_actual
+        ? { ...cadete.ubicacion_actual, radioKm: RADIO_DISPONIBLES_KM }
+        : undefined,
+    });
     const redis = getRedis();
     const now = Date.now();
 
-    type Item = (typeof list.items)[number] & {
+    type Item = Viaje & {
       distancia_al_origen_km?: number;
       oferta_rank?: number;
     };
 
     const out: Item[] = [];
-    for (const v of list.items) {
+    for (const v of pendientes) {
       const dist = cadete.ubicacion_actual
         ? geolocalizacionService.distanciaKm(cadete.ubicacion_actual, v.origen)
         : 999;

@@ -36,6 +36,18 @@ export class GeolocalizacionService {
   }
 
   /** Expresión SQL Haversine en metros entre (lat_col,lng_col) y (@lat,@lng) */
+  /** Rectángulo que contiene el círculo de `radioKm`: prefiltro indexable antes del haversine. */
+  boundingBox(centro: Coordenada, radioKm: number) {
+    const dLat = radioKm / 111.32;
+    const dLng = radioKm / (111.32 * Math.max(Math.cos(toRad(centro.lat)), 0.01));
+    return {
+      minLat: centro.lat - dLat,
+      maxLat: centro.lat + dLat,
+      minLng: centro.lng - dLng,
+      maxLng: centro.lng + dLng,
+    };
+  }
+
   haversineMetersSql(latCol: string, lngCol: string): string {
     return `(
       6371000 * acos(LEAST(1.0, GREATEST(-1.0,

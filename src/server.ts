@@ -3,6 +3,7 @@ import { createApp } from './app.js';
 import { env } from './config/env.js';
 import { getPool, closePool } from './config/database.js';
 import { connectRedis, disconnectRedis } from './config/redis.js';
+import { runMigrations } from './db/migrate.js';
 import { setupSockets } from './sockets/index.js';
 import { startViajeAlertaWorker, stopViajeAlertaWorker } from './jobs/viaje-alerta.worker.js';
 
@@ -20,6 +21,13 @@ async function main(): Promise<void> {
   } catch (err) {
     console.error('[db] No se pudo conectar a PostgreSQL:', err);
     console.error('Tip: verificá DATABASE_URL / PG* y que exista la DB salta_delivery.');
+    process.exit(1);
+  }
+
+  try {
+    await runMigrations();
+  } catch (err) {
+    console.error(err);
     process.exit(1);
   }
 

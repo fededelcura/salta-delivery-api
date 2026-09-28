@@ -9,6 +9,7 @@ import {
   clientePreferenciasSchema,
   crearMercadoPagoSchema,
   crearTarjetaSchema,
+  historialQuerySchema,
   idParamSchema,
   recargarBilleteraSchema,
   solicitarViajeInvitadoSchema,
@@ -33,7 +34,11 @@ router.patch(
   validate({ body: clientePreferenciasSchema }),
   asyncHandler(clienteController.actualizarPreferencias),
 );
-router.get('/viajes', asyncHandler(clienteController.viajes));
+router.get(
+  '/viajes',
+  validate({ query: historialQuerySchema }),
+  asyncHandler(clienteController.viajes),
+);
 router.get('/destinos-recientes', asyncHandler(clienteController.destinosRecientes));
 
 router.get('/medios-pago', asyncHandler(clienteController.mediosPago));

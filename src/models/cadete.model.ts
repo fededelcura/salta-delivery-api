@@ -10,6 +10,7 @@ import type {
 import { ConflictError, NotFoundError, ValidationError } from '../utils/errors.js';
 import { rethrowSqlConflict } from '../utils/sql-conflicts.js';
 import { parseJsonField } from '../utils/json-field.js';
+import { geolocalizacionService } from '../services/geolocalizacion.service.js';
 import bcrypt from 'bcryptjs';
 import { cadeteActividadModel } from './cadete_actividad.model.js';
 
@@ -346,16 +347,36 @@ export class CadeteModel {
     return this.getById(usuarioId);
   }
 
-  async listarDisponiblesCercanos() {
+  /** Online + aprobados dentro de `radioKm` del origen, más cercanos primero (bbox indexado + haversine). */
+  async listarDisponiblesCercanos(origen: Coordenada, radioKm: number, limit = 50) {
+    const box = geolocalizacionService.boundingBox(origen, radioKm);
+    const dist = geolocalizacionService.haversineMetersSql('cand.lat', 'cand.lng');
     const pool = await getPool();
-    const result = await pool.request().query<CadeteRow>(`
-      ${SELECT_CADETE}
-      WHERE c.disponibilidad = 'online'
-        AND c.estado_verificacion = 'aprobado'
-        AND u.estado = 'activo'
-        AND c.ubicacion_lat IS NOT NULL
-        AND c.ubicacion_lng IS NOT NULL
-    `);
+    const result = await pool
+      .request()
+      .input('lat', sql.Float, origen.lat)
+      .input('lng', sql.Float, origen.lng)
+      .input('minLat', sql.Float, box.minLat)
+      .input('maxLat', sql.Float, box.maxLat)
+      .input('minLng', sql.Float, box.minLng)
+      .input('maxLng', sql.Float, box.maxLng)
+      .input('radioM', sql.Float, radioKm * 1000)
+      .input('limit', sql.Int, limit)
+      .query<CadeteRow>(`
+        SELECT * FROM (
+          ${SELECT_CADETE}
+          WHERE c.disponibilidad = 'online'
+            AND c.estado_verificacion = 'aprobado'
+            AND c.ubicacion_lat IS NOT NULL
+            AND c.ubicacion_lng IS NOT NULL
+            AND c.ubicacion_lat BETWEEN @minLat AND @maxLat
+            AND c.ubicacion_lng BETWEEN @minLng AND @maxLng
+            AND u.estado = 'activo'
+        ) cand
+        WHERE ${dist} <= @radioM
+        ORDER BY ${dist}
+        LIMIT @limit
+      `);
     return result.recordset.map(mapCadete);
   }
 

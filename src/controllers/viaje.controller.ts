@@ -15,12 +15,14 @@ export class ViajeController {
       cadete_id?: string;
       page?: number;
       pageSize?: number;
+      cursor?: string;
     };
     const data = await viajeModel.listar(q);
     ok(res, data.items, 200, {
-      total: data.total,
+      total: data.total ?? undefined,
       page: data.page,
       pageSize: data.pageSize,
+      next_cursor: data.next_cursor,
     });
   };
 

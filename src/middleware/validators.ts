@@ -202,6 +202,13 @@ export const viajesFiltroSchema = z.object({
   cadete_id: z.string().uuid().optional(),
   page: z.coerce.number().int().positive().default(1),
   pageSize: z.coerce.number().int().positive().max(100).default(20),
+  cursor: z.string().max(200).optional(),
+});
+
+/** Historial por cursor: `?cursor=<next_cursor>&limit=20` */
+export const historialQuerySchema = z.object({
+  cursor: z.string().max(200).optional(),
+  limit: z.coerce.number().int().positive().max(50).default(20),
 });
 
 export const adminConfigTarifasSchema = z.object({

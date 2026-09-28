@@ -30,8 +30,18 @@ export class ClienteController {
   };
 
   viajes = async (req: Request, res: Response): Promise<void> => {
-    const data = await viajeModel.listar({ cliente_id: uid(req) });
-    ok(res, data.items, 200, { total: data.total, page: data.page, pageSize: data.pageSize });
+    const q = req.query as { cursor?: string; limit?: number };
+    const data = await viajeModel.listar({
+      cliente_id: uid(req),
+      cursor: q.cursor,
+      pageSize: q.limit,
+    });
+    ok(res, data.items, 200, {
+      total: data.total ?? undefined,
+      page: data.page,
+      pageSize: data.pageSize,
+      next_cursor: data.next_cursor,
+    });
   };
 
   destinosRecientes = async (req: Request, res: Response): Promise<void> => {

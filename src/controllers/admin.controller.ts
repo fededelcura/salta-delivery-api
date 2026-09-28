@@ -362,7 +362,7 @@ export class AdminController {
       pageSize: Number(req.query.pageSize ?? 20),
     });
     ok(res, data.items, 200, {
-      total: data.total,
+      total: data.total ?? undefined,
       page: data.page,
       pageSize: data.pageSize,
     });
