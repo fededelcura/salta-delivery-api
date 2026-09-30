@@ -25,6 +25,9 @@ const envSchema = z.object({
   MERCADOPAGO_WEBHOOK_SECRET: z.string().optional().default(''),
   RESEND_API_KEY: z.string().optional().default(''),
   MAIL_FROM: z.string().optional().default('Salta Delivery <onboarding@resend.dev>'),
+  VAPID_PUBLIC_KEY: z.string().optional().default(''),
+  VAPID_PRIVATE_KEY: z.string().optional().default(''),
+  VAPID_SUBJECT: z.string().optional().default('mailto:admin@saltadelivery.com'),
 });
 
 const parsed = envSchema.safeParse(process.env);

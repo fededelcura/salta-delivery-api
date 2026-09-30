@@ -10,6 +10,7 @@ import type { Coordenada } from '../types/domain.js';
 import { cadeteModel } from '../models/cadete.model.js';
 import { geolocalizacionService } from './geolocalizacion.service.js';
 import { emitViajeNuevo, type ViajeNuevoPayload } from '../sockets/index.js';
+import { pushService } from './push.service.js';
 
 const CLAVE = 'despacho.anillos';
 const CACHE_MS = 30_000;
@@ -55,6 +56,20 @@ export interface ViajeParaAviso {
 
 type Emisor = (cadeteId: string, payload: ViajeNuevoPayload) => void;
 
+/** Socket si la app está abierta + push del sistema si está cerrada (el tag las junta en una). */
+export const avisarCadete: Emisor = (cadeteId, p) => {
+  emitViajeNuevo(cadeteId, p);
+  void pushService
+    .enviarAUsuario(cadeteId, {
+      titulo: 'Pedido nuevo cerca',
+      cuerpo: `${p.origen_direccion} · $${Math.round(p.tarifa).toLocaleString('es-AR')} · a ${p.distancia_km} km`,
+      tag: `viaje-${p.viaje_id}`,
+      url: '/#/cadete/viajes',
+      viaje_id: p.viaje_id,
+    })
+    .catch((err) => console.error('[push] viaje_nuevo', p.viaje_id, err));
+};
+
 export class DespachoService {
   private cache: { cfg: ConfigAnillos; at: number } | null = null;
   /** Último anillo avisado por pedido; en memoria (un reinicio puede repetir un aviso). */
@@ -64,7 +79,7 @@ export class DespachoService {
    * Avisa a los cadetes online que quedaron dentro del anillo vigente y no fueron avisados
    * en un anillo anterior. Devuelve los ids avisados.
    */
-  async notificarAnillo(viaje: ViajeParaAviso, emitir: Emisor = emitViajeNuevo, ahora = Date.now()) {
+  async notificarAnillo(viaje: ViajeParaAviso, emitir: Emisor = avisarCadete, ahora = Date.now()) {
     const cfg = await this.getConfig();
     const idx = indiceParaEdad(cfg, ahora - new Date(viaje.fecha_solicitud).getTime());
     const previo = this.avisados.get(viaje.id);
