@@ -15,6 +15,9 @@ export function startViajeAlertaWorker(): void {
     }).catch((err) => {
       console.error('[worker] sin_aceptacion', err);
     });
+    void viajeModel.notificarAnillosPendientes().catch((err) => {
+      console.error('[worker] avisos anillo', err);
+    });
   };
   // Primera pasada tras 15s (dejar que arranque la DB)
   setTimeout(tick, 15_000);

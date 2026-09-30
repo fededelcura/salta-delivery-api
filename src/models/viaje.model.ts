@@ -32,6 +32,8 @@ const TOP_OFERTA = 8;
 const POOL_ABIERTO_MS = 2 * 60 * 1000;
 /** Sin accept → escalar alarma admin. */
 export const TIMEOUT_SIN_ACEPT_MS = 5 * 60 * 1000;
+/** Pedidos más viejos no generan avisos (evita avisar datos de prueba colgados tras un reinicio). */
+const AVISO_MAX_EDAD_MS = 30 * 60 * 1000;
 
 /** `ts` viaja como texto con microsegundos: Date de JS truncaría a ms y saltearía filas. */
 function encodeCursor(ts: string, id: string): string {
@@ -322,6 +324,15 @@ export class ViajeModel {
     // Oferta a cadetes cercanos + alerta admin en paralelo
     await Promise.all([
       this.intentarAsignar(id),
+      despachoService
+        .notificarAnillo({
+          id,
+          origen: input.origen,
+          origen_direccion: input.origen_direccion,
+          fecha_solicitud: new Date(),
+          tarifa_final: preview.detalle.tarifa,
+        })
+        .catch((err) => console.error('[aviso] viaje_nuevo', id, err)),
       this.alertarAdminViajeNuevo(id, input.clienteId, input.origen_direccion, input.destino_direccion),
     ]);
 
@@ -411,6 +422,23 @@ export class ViajeModel {
       /* ignore */
     }
     return result;
+  }
+
+  /** Worker: avisa a los cadetes que entran en el anillo ampliado de cada pedido pendiente. */
+  async notificarAnillosPendientes() {
+    const pendientes = await this.listarBuscandoSinCadete();
+    despachoService.podarAvisados(new Set(pendientes.map((v) => v.id)));
+    const ahora = Date.now();
+    let avisos = 0;
+    for (const v of pendientes) {
+      if (ahora - new Date(v.fecha_solicitud).getTime() > AVISO_MAX_EDAD_MS) continue;
+      try {
+        avisos += (await despachoService.notificarAnillo(v)).length;
+      } catch (err) {
+        console.error('[worker] aviso anillo', v.id, err);
+      }
+    }
+    return { avisos };
   }
 
   /** Worker: 5 min sin accept → escalar incidencia + re-ofertar. */

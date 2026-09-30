@@ -1,6 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { ANILLOS_DEFAULT, radioParaEdad } from '../src/services/despacho.service.js';
+import { ANILLOS_DEFAULT, indiceParaEdad, radioParaEdad } from '../src/services/despacho.service.js';
+
+test('índice del anillo según la antigüedad del pedido', () => {
+  assert.equal(indiceParaEdad(ANILLOS_DEFAULT, 59_000), 0);
+  assert.equal(indiceParaEdad(ANILLOS_DEFAULT, 60_000), 1);
+  assert.equal(indiceParaEdad(ANILLOS_DEFAULT, 10 * 60_000), 2);
+});
 
 test('radio del anillo según la antigüedad del pedido', () => {
   assert.equal(radioParaEdad(ANILLOS_DEFAULT, 0), 3);

@@ -42,6 +42,20 @@ export function emitCadeteUbicacion(payload: {
   ioRef.to('admin').emit('cadete:ubicacion', body);
 }
 
+export interface ViajeNuevoPayload {
+  viaje_id: string;
+  origen_direccion: string;
+  tarifa: number;
+  distancia_km: number;
+  radio_km: number;
+}
+
+/** Pedido nuevo en el anillo del cadete (sala personal `user:<id>`). */
+export function emitViajeNuevo(cadeteId: string, payload: ViajeNuevoPayload): void {
+  if (!ioRef) return;
+  ioRef.to(`user:${cadeteId}`).emit('viaje:nuevo', { ...payload, ts: new Date().toISOString() });
+}
+
 export function setupSockets(httpServer: HttpServer): Server {
   const io = new Server(httpServer, {
     cors: {

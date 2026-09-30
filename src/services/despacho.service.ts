@@ -6,6 +6,10 @@
 import { getPool, sql } from '../config/database.js';
 import { ValidationError } from '../utils/errors.js';
 import { parseJsonField } from '../utils/json-field.js';
+import type { Coordenada } from '../types/domain.js';
+import { cadeteModel } from '../models/cadete.model.js';
+import { geolocalizacionService } from './geolocalizacion.service.js';
+import { emitViajeNuevo, type ViajeNuevoPayload } from '../sockets/index.js';
 
 const CLAVE = 'despacho.anillos';
 const CACHE_MS = 30_000;
@@ -29,14 +33,71 @@ function normalizar(raw: Partial<ConfigAnillos> | null | undefined): ConfigAnill
   };
 }
 
+/** Índice del anillo vigente para un pedido con `edadMs` de antigüedad. */
+export function indiceParaEdad(cfg: ConfigAnillos, edadMs: number): number {
+  const idx = Math.floor(Math.max(0, edadMs) / (cfg.paso_seg * 1000));
+  return Math.min(idx, cfg.radios_km.length - 1);
+}
+
 /** Radio vigente para un pedido con `edadMs` de antigüedad. */
 export function radioParaEdad(cfg: ConfigAnillos, edadMs: number): number {
-  const idx = Math.floor(Math.max(0, edadMs) / (cfg.paso_seg * 1000));
-  return cfg.radios_km[Math.min(idx, cfg.radios_km.length - 1)];
+  return cfg.radios_km[indiceParaEdad(cfg, edadMs)];
 }
+
+export interface ViajeParaAviso {
+  id: string;
+  origen: Coordenada;
+  origen_direccion: string;
+  fecha_solicitud: string | Date;
+  tarifa_final?: number | null;
+  tarifa_estimada?: number | null;
+}
+
+type Emisor = (cadeteId: string, payload: ViajeNuevoPayload) => void;
 
 export class DespachoService {
   private cache: { cfg: ConfigAnillos; at: number } | null = null;
+  /** Último anillo avisado por pedido; en memoria (un reinicio puede repetir un aviso). */
+  private avisados = new Map<string, number>();
+
+  /**
+   * Avisa a los cadetes online que quedaron dentro del anillo vigente y no fueron avisados
+   * en un anillo anterior. Devuelve los ids avisados.
+   */
+  async notificarAnillo(viaje: ViajeParaAviso, emitir: Emisor = emitViajeNuevo, ahora = Date.now()) {
+    const cfg = await this.getConfig();
+    const idx = indiceParaEdad(cfg, ahora - new Date(viaje.fecha_solicitud).getTime());
+    const previo = this.avisados.get(viaje.id);
+    if (previo !== undefined && previo >= idx) return [] as string[];
+
+    const radio = cfg.radios_km[idx];
+    const radioPrevio = previo !== undefined ? cfg.radios_km[previo] : 0;
+    this.avisados.set(viaje.id, idx);
+
+    const cadetes = await cadeteModel.listarDisponiblesCercanos(viaje.origen, radio);
+    const avisados: string[] = [];
+    for (const c of cadetes) {
+      if (!c.ubicacion_actual) continue;
+      const dist = geolocalizacionService.distanciaKm(c.ubicacion_actual, viaje.origen);
+      if (dist > radio || (previo !== undefined && dist <= radioPrevio)) continue;
+      emitir(c.usuario_id, {
+        viaje_id: viaje.id,
+        origen_direccion: viaje.origen_direccion,
+        tarifa: Number(viaje.tarifa_final ?? viaje.tarifa_estimada ?? 0),
+        distancia_km: Math.round(dist * 10) / 10,
+        radio_km: radio,
+      });
+      avisados.push(c.usuario_id);
+    }
+    return avisados;
+  }
+
+  /** Olvida pedidos que ya no buscan cadete. */
+  podarAvisados(pendientes: Set<string>) {
+    for (const id of this.avisados.keys()) {
+      if (!pendientes.has(id)) this.avisados.delete(id);
+    }
+  }
 
   async getConfig(): Promise<ConfigAnillos> {
     if (this.cache && Date.now() - this.cache.at < CACHE_MS) return this.cache.cfg;

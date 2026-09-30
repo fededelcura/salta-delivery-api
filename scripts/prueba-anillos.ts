@@ -97,8 +97,9 @@ async function main() {
     await pool
       .request()
       .input('id', sql.UniqueIdentifier, cadeteId)
-      .query<{ lat: number | null; lng: number | null; at: Date | null }>(`
-        SELECT ubicacion_lat AS lat, ubicacion_lng AS lng, ubicacion_actualizada_en AS at
+      .query<{ lat: number | null; lng: number | null; at: Date | null; disp: string }>(`
+        SELECT ubicacion_lat AS lat, ubicacion_lng AS lng, ubicacion_actualizada_en AS at,
+               disponibilidad AS disp
         FROM cadetes WHERE usuario_id = @id
       `)
   ).recordset[0];
@@ -124,6 +125,34 @@ async function main() {
       console.log(`${okCaso ? 'OK ' : 'FALLA'} pedido de ${c.seg}s → ve ${JSON.stringify(got)} km (esperado ${JSON.stringify(c.esperado)})`);
     }
 
+    // Avisos por socket: el cadete (online) recibe cada pedido una sola vez, al entrar en su anillo.
+    await pool
+      .request()
+      .input('id', sql.UniqueIdentifier, cadeteId)
+      .query(`UPDATE cadetes SET disponibilidad = 'online' WHERE usuario_id = @id`);
+    const viajes = await Promise.all(ids.map((id) => viajeModel.getById(id)));
+    const avisosCasos: { seg: number; esperado: number[] }[] = [
+      { seg: 30, esperado: [2] },
+      { seg: 90, esperado: [] },
+      { seg: 180, esperado: [8] },
+      { seg: 600, esperado: [] },
+    ];
+    for (const c of avisosCasos) {
+      const got: number[] = [];
+      for (const [i, v] of viajes.entries()) {
+        await despachoService.notificarAnillo(
+          v,
+          (cid) => {
+            if (cid === cadeteId) got.push(DISTANCIAS_KM[i]);
+          },
+          new Date(v.fecha_solicitud).getTime() + c.seg * 1000,
+        );
+      }
+      const okCaso = JSON.stringify(got) === JSON.stringify(c.esperado);
+      if (!okCaso) fallas += 1;
+      console.log(`${okCaso ? 'OK ' : 'FALLA'} aviso a los ${c.seg}s → ${JSON.stringify(got)} km (esperado ${JSON.stringify(c.esperado)})`);
+    }
+
     await setUbicacion(cadeteId, null, null, null);
     const sinGps = await visibles(cadeteId, ids);
     if (sinGps.length) fallas += 1;
@@ -136,7 +165,12 @@ async function main() {
         .query(`UPDATE viajes SET estado = 'cancelado' WHERE id = @id`);
     }
     await setUbicacion(cadeteId, previa?.lat ?? null, previa?.lng ?? null, previa?.at ?? null);
-    console.log(`Limpieza: ${ids.length} pedidos de prueba cancelados, ubicación restaurada.`);
+    await pool
+      .request()
+      .input('id', sql.UniqueIdentifier, cadeteId)
+      .input('d', sql.NVarChar(20), previa?.disp ?? 'offline')
+      .query(`UPDATE cadetes SET disponibilidad = @d WHERE usuario_id = @id`);
+    console.log(`Limpieza: ${ids.length} pedidos de prueba cancelados, ubicación y disponibilidad restauradas.`);
   }
   if (fallas) throw new Error(`${fallas} caso(s) fallaron`);
 }
