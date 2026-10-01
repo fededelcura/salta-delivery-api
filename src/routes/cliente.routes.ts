@@ -12,19 +12,17 @@ import {
   historialQuerySchema,
   idParamSchema,
   recargarBilleteraSchema,
-  solicitarViajeInvitadoSchema,
   solicitarViajeSchema,
   viajeIdParamSchema,
 } from '../middleware/validators.js';
+import { AppError } from '../utils/errors.js';
 
 const router = Router();
 
-/** Pedido sin login (teléfono mínimo) */
-router.post(
-  '/solicitar-invitado',
-  validate({ body: solicitarViajeInvitadoSchema }),
-  asyncHandler(clienteController.solicitarViajeInvitado),
-);
+/** Ya no se pide sin cuenta: la PWA vieja cacheada recibe un mensaje claro. */
+router.post('/solicitar-invitado', () => {
+  throw new AppError('Para pedir necesitás una cuenta: ingresá o registrate.', 410, 'CUENTA_REQUERIDA');
+});
 
 router.use(authenticate, authorize('cliente'));
 

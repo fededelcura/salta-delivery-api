@@ -32,8 +32,11 @@ const TOP_OFERTA = 8;
 const POOL_ABIERTO_MS = 2 * 60 * 1000;
 /** Sin accept → escalar alarma admin. */
 export const TIMEOUT_SIN_ACEPT_MS = 5 * 60 * 1000;
-/** Pedidos más viejos no generan avisos (evita avisar datos de prueba colgados tras un reinicio). */
-const AVISO_MAX_EDAD_MS = 30 * 60 * 1000;
+/**
+ * Pedido sin cadete más viejo que esto: deja de ofrecerse, avisarse y re-asignarse.
+ * No se cancela solo: el admin lo ve como "Vencido" y decide.
+ */
+export const VIAJE_VISIBLE_MS = 30 * 60 * 1000;
 
 /** `ts` viaja como texto con microsegundos: Date de JS truncaría a ms y saltearía filas. */
 function encodeCursor(ts: string, id: string): string {
@@ -426,12 +429,10 @@ export class ViajeModel {
 
   /** Worker: avisa a los cadetes que entran en el anillo ampliado de cada pedido pendiente. */
   async notificarAnillosPendientes() {
-    const pendientes = await this.listarBuscandoSinCadete();
+    const pendientes = await this.listarBuscandoSinCadete({ newerThanMs: VIAJE_VISIBLE_MS });
     despachoService.podarAvisados(new Set(pendientes.map((v) => v.id)));
-    const ahora = Date.now();
     let avisos = 0;
     for (const v of pendientes) {
-      if (ahora - new Date(v.fecha_solicitud).getTime() > AVISO_MAX_EDAD_MS) continue;
       try {
         avisos += (await despachoService.notificarAnillo(v)).length;
       } catch (err) {
@@ -443,7 +444,10 @@ export class ViajeModel {
 
   /** Worker: 5 min sin accept → escalar incidencia + re-ofertar. */
   async procesarViajesSinAceptacion() {
-    const vencidos = await this.listarBuscandoSinCadete({ olderThanMs: TIMEOUT_SIN_ACEPT_MS });
+    const vencidos = await this.listarBuscandoSinCadete({
+      olderThanMs: TIMEOUT_SIN_ACEPT_MS,
+      newerThanMs: VIAJE_VISIBLE_MS,
+    });
     let escalados = 0;
     for (const v of vencidos) {
       try {
@@ -523,9 +527,13 @@ export class ViajeModel {
     };
   }
 
-  /** Viajes esperando cadete (usa ix_viajes_buscando). Opcional: más viejos que X ms o cerca de un punto. */
+  /**
+   * Viajes esperando cadete (usa ix_viajes_buscando).
+   * Opcional: más viejos que X ms, más nuevos que Y ms o cerca de un punto.
+   */
   async listarBuscandoSinCadete(opts: {
     olderThanMs?: number;
+    newerThanMs?: number;
     cerca?: { lat: number; lng: number; radioKm: number };
     limit?: number;
   } = {}) {
@@ -535,6 +543,10 @@ export class ViajeModel {
     if (opts.olderThanMs != null) {
       req.input('antes', sql.DateTimeOffset, new Date(Date.now() - opts.olderThanMs));
       where.push('fecha_solicitud < @antes');
+    }
+    if (opts.newerThanMs != null) {
+      req.input('desde', sql.DateTimeOffset, new Date(Date.now() - opts.newerThanMs));
+      where.push('fecha_solicitud >= @desde');
     }
     if (opts.cerca) {
       const box = geolocalizacionService.boundingBox(opts.cerca, opts.cerca.radioKm);
@@ -771,6 +783,7 @@ export class ViajeModel {
     const radioMax = cfg.radios_km[cfg.radios_km.length - 1];
     const pendientes = await this.listarBuscandoSinCadete({
       cerca: { ...ubicacion, radioKm: radioMax },
+      newerThanMs: VIAJE_VISIBLE_MS,
     });
     const redis = getRedis();
     const now = Date.now();

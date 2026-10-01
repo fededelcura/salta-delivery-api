@@ -42,6 +42,13 @@ export function toSession(user: {
 export class AuthController {
   register = async (req: Request, res: Response): Promise<void> => {
     const result = await authModel.register(req.body);
+    if (result && !result.requiresEmailVerification) {
+      const user = await authModel.findByEmail(result.email);
+      if (user) {
+        created(res, { ...result, session: toSession(user) });
+        return;
+      }
+    }
     created(res, result);
   };
 

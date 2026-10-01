@@ -28,6 +28,23 @@ router.post(
   }),
 );
 
+router.post(
+  '/probar',
+  authenticate,
+  asyncHandler(async (req, res) => {
+    if (!req.user?.sub) throw new UnauthorizedError();
+    ok(
+      res,
+      await pushService.enviarAUsuario(req.user.sub, {
+        titulo: 'Prueba de avisos',
+        cuerpo: 'Si ves esto, los avisos de pedidos nuevos te van a llegar.',
+        tag: 'prueba',
+        url: '/#/cadete/viajes',
+      }),
+    );
+  }),
+);
+
 router.delete(
   '/suscribir',
   authenticate,
