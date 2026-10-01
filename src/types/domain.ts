@@ -248,6 +248,7 @@ export interface Viaje {
   destinatario_nombre: string | null;
   destinatario_telefono: string | null;
   pago_token: string | null;
+  motivo_cancelacion?: string | null;
 }
 
 export interface Suscripcion {

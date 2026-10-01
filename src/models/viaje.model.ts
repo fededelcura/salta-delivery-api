@@ -32,11 +32,9 @@ const TOP_OFERTA = 8;
 const POOL_ABIERTO_MS = 2 * 60 * 1000;
 /** Sin accept → escalar alarma admin. */
 export const TIMEOUT_SIN_ACEPT_MS = 5 * 60 * 1000;
-/**
- * Pedido sin cadete más viejo que esto: deja de ofrecerse, avisarse y re-asignarse.
- * No se cancela solo: el admin lo ve como "Vencido" y decide.
- */
+/** Pedido sin cadete más viejo que esto: deja de ofrecerse y el worker lo cancela. */
 export const VIAJE_VISIBLE_MS = 30 * 60 * 1000;
+export const MOTIVO_VENCIDO = 'Sin cadete disponible (vencido a los 30 min)';
 
 /** `ts` viaja como texto con microsegundos: Date de JS truncaría a ms y saltearía filas. */
 function encodeCursor(ts: string, id: string): string {
@@ -82,6 +80,7 @@ interface ViajeRow {
   destinatario_nombre: string | null;
   destinatario_telefono: string | null;
   pago_token: string | null;
+  motivo_cancelacion: string | null;
 }
 
 function mapViaje(row: ViajeRow): Viaje {
@@ -121,6 +120,7 @@ function mapViaje(row: ViajeRow): Viaje {
     destinatario_nombre: row.destinatario_nombre ?? null,
     destinatario_telefono: row.destinatario_telefono ?? null,
     pago_token: row.pago_token ? String(row.pago_token) : null,
+    motivo_cancelacion: row.motivo_cancelacion ?? null,
   };
 }
 
@@ -132,7 +132,8 @@ const VIAJE_COLUMNS = `
   comision_plataforma, pago_cadete, detalle_tarifa, estado, fecha_solicitud,
   tiempo_preparacion_min, listo_para_retiro_en,
   metodo_pago, estado_pago, calificacion_cliente, calificacion_cadete,
-  importe_pedido, pagador_envio, destinatario_nombre, destinatario_telefono, pago_token
+  importe_pedido, pagador_envio, destinatario_nombre, destinatario_telefono, pago_token,
+  motivo_cancelacion
 `;
 
 const SELECT_VIAJE = `SELECT ${VIAJE_COLUMNS} FROM viajes`;
@@ -463,6 +464,36 @@ export class ViajeModel {
       }
     }
     return { escalados, revisados: vencidos.length };
+  }
+
+  /** Worker: cancela pedidos sin cadete de más de 30 min y cierra sus alertas abiertas. */
+  async cancelarVencidos(): Promise<Array<{ id: string; cliente_id: string }>> {
+    const pool = await getPool();
+    const result = await pool
+      .request()
+      .input('antes', sql.DateTimeOffset, new Date(Date.now() - VIAJE_VISIBLE_MS))
+      .input('motivo', sql.NVarChar(500), MOTIVO_VENCIDO)
+      .query<{ id: string; cliente_id: string }>(`
+        UPDATE viajes
+        SET estado = 'cancelado',
+            fecha_cancelacion = NOW(),
+            motivo_cancelacion = @motivo
+        WHERE estado = 'buscando_cadete' AND cadete_id IS NULL AND fecha_solicitud < @antes
+        RETURNING id, cliente_id
+      `);
+    const cancelados = result.recordset.map((r) => ({ id: String(r.id), cliente_id: String(r.cliente_id) }));
+    for (const v of cancelados) {
+      await pool
+        .request()
+        .input('viaje', sql.UniqueIdentifier, v.id)
+        .query(`
+          UPDATE incidencias
+          SET estado = 'cerrada', fecha_resolucion = NOW()
+          WHERE viaje_id = @viaje AND estado IN ('abierta', 'en_proceso', 'escalada')
+            AND tipo IN ('viaje_nuevo', 'sin_cadete', 'buscando_cadete')
+        `);
+    }
+    return cancelados;
   }
 
   /**
